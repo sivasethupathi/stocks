@@ -1,0 +1,9 @@
+streamlit
+yfinance
+pandas
+numpy
+python-dotenv
+technical-analysis-library-ta
+pyautogen[agentchat]
+openai
+plotly
