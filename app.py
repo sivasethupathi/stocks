@@ -17,7 +17,7 @@ from ta.volume import OnBalanceVolumeIndicator
 # ======================================================================================
 st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
 
-st.title("Stock Analyzer | SIVASETHUPATHI MARIAPPAN")
+st.title("📈 Integrated Stock Analyzer")
 st.markdown("Select an industry from your Excel file to get a consolidated analysis, including financial ratios from **Screener.in** and a detailed **Swing Trading** recommendation.")
 
 # ======================================================================================
@@ -31,22 +31,24 @@ def get_stock_data(ticker):
     # Fetch weekly data for swing analysis
     history_weekly = stock.history(period="3y", interval="1wk")
     # Fetch daily data for historical price lookup
-    history_daily = stock.history(period="1y", interval="1d")
+    history_daily = stock.history(period="2y", interval="1d") # Fetch more daily data to ensure date coverage
     info = stock.info
     financials = stock.financials
     return history_weekly, info, financials, history_daily
 
 @st.cache_data(ttl=3600)
 def get_price_on_date(daily_history, target_date_str):
-    """Finds the closest closing price to a target date from daily history."""
+    """Finds the closest closing price and the actual date to a target date from daily history."""
     try:
         target_date = pd.to_datetime(target_date_str)
         # Find the index position of the closest date
         closest_date_index = daily_history.index.get_indexer([target_date], method='nearest')[0]
-        # Get the closing price for that date
-        return daily_history.iloc[closest_date_index]['Close']
+        # Get the actual date and closing price
+        actual_date = daily_history.index[closest_date_index]
+        price = daily_history.iloc[closest_date_index]['Close']
+        return price, actual_date
     except Exception:
-        return None
+        return None, None
 
 @st.cache_data(ttl=3600)
 def scrape_screener_data(ticker):
@@ -179,7 +181,7 @@ def display_stock_analysis(ticker):
         
         # --- NEW: Calculate Move within FY ---
         current_price = history['Close'].iloc[-1]
-        price_mar_31 = get_price_on_date(daily_history, '2025-03-28')
+        price_mar_31, date_mar_31 = get_price_on_date(daily_history, '2025-03-31')
         move_fy_percent = None
         if price_mar_31 and current_price:
             move_fy_percent = ((current_price - price_mar_31) / price_mar_31) * 100
@@ -189,7 +191,10 @@ def display_stock_analysis(ticker):
         m_col1.metric("Current Price", f"₹{current_price:,.2f}")
         m_col2.metric("Swing Signal", swing_recommendation)
         m_col3.metric("Intrinsic Value", f"₹{intrinsic_value:,.2f}" if intrinsic_value else "N/A")
-        m_col4.metric("Move within FY", f"{move_fy_percent:.2f}%" if move_fy_percent is not None else "N/A", delta_color="off")
+        
+        fy_label = f"Move within FY (since {date_mar_31.strftime('%d-%b-%Y')})" if date_mar_31 else "Move within FY"
+        m_col4.metric(fy_label, f"{move_fy_percent:.2f}%" if move_fy_percent is not None else "N/A", delta_color="off")
+        
         m_col5.metric("Buy Price (≈20W SMA)", f"₹{swing_indicators['20-Week SMA']:,.2f}" if swing_indicators else "N/A")
 
         st.divider()
@@ -225,7 +230,7 @@ def display_stock_analysis(ticker):
 # ======================================================================================
 # STREAMLIT UI & LOGIC
 # ======================================================================================
-EXCEL_FILE_PATH = "SELECTED STOCKS 22FEB2025.xlsx"
+EXCEL_FILE_PATH = "SELECTED STOCKS 2025.xlsx"
 TICKER_COLUMN_NAME = "NSE SYMBOL"
 INDUSTRY_COLUMN_NAME = "INDUSTRY"
 
