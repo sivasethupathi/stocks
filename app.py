@@ -1,334 +1,255 @@
-import os
-import json
-import asyncio
-from datetime import datetime, timedelta
-from typing import Dict, Any, Optional
-import numpy as np
+import streamlit as st
 import pandas as pd
 import yfinance as yf
-import streamlit as st
-from dotenv import load_dotenv
+import numpy as np
+from ta.trend import SMAIndicator
 from ta.momentum import RSIIndicator
-from ta.trend import MACD
+import plotly.graph_objects as go
+import io
 
-# AutoGen v0.4 (AgentChat)
-from autogen_agentchat.agents import AssistantAgent
-from autogen_agentchat.teams import RoundRobinGroupChat
-from autogen_agentchat.messages import TextMessage
-from autogen_ext.models.openai import OpenAIChatCompletionClient
+# ======================================================================================
+# CONFIGURATION & HEADER
+# ======================================================================================
+st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
 
-# =========================
-# ENV / PAGE
-# =========================
-load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+st.title("📈 Intrinsic Value & Technical Stock Analyzer")
+st.markdown("""
+This tool analyzes stocks from your Excel file to determine their intrinsic value based on Benjamin Graham's formula 
+and evaluates their technical strength using moving averages and RSI.
+""")
 
-st.set_page_config(page_title="📈 Stock Analyst Agent", page_icon="📈", layout="wide")
-st.title("📈 Stock Analyst Agent (Real Data + AutoGen)")
-st.caption("Enter a ticker symbol (e.g., AAPL, MSFT, TSLA). I’ll fetch data, analyze it, and the agent will recommend BUY / HOLD / SELL.")
+# ======================================================================================
+# CORE CALCULATION FUNCTIONS
+# ======================================================================================
 
-if not OPENAI_API_KEY:
-    st.warning("Set OPENAI_API_KEY in your environment or a .env file.", icon="⚠️")
-
-
-# =========================
-# Session State
-# =========================
-def _init_state():
-    if "loop" not in st.session_state:
-        st.session_state.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(st.session_state.loop)
-
-    if "model_client" not in st.session_state:
-        st.session_state.model_client: Optional[OpenAIChatCompletionClient] = None
-
-    if "agent" not in st.session_state:
-        st.session_state.agent: Optional[AssistantAgent] = None
-
-    if "team" not in st.session_state:
-        st.session_state.team: Optional[RoundRobinGroupChat] = None
-
-    if "latest_json" not in st.session_state:
-        st.session_state.latest_json: Optional[Dict[str, Any]] = None
-
-_init_state()
-
-
-# =========================
-# Data / Indicator Helpers
-# =========================
-def fetch_stock_data(symbol: str) -> Dict[str, Any]:
+def calculate_graham_intrinsic_value(info, financials, bond_yield):
     """
-    Pull price history (1y daily), fast info, and basic financial ratios if available.
+    Calculates the intrinsic value of a stock using Benjamin Graham's formula.
+    Formula: V = (EPS * (8.5 + 2g) * 4.4) / Y
+    V = Intrinsic Value
+    EPS = Trailing 12-month Earnings Per Share
+    8.5 = P/E base for a no-growth company
+    g = Estimated earnings growth rate (we'll estimate this over 5 years)
+    4.4 = The average yield of high-grade corporate bonds in Graham's time
+    Y = The current yield on AAA corporate bonds (user input)
     """
-    tk = yf.Ticker(symbol)
-
-    # Price history
-    end = datetime.utcnow()
-    start = end - timedelta(days=365 + 30)  # little buffer
-    hist = tk.history(start=start.date(), end=end.date(), interval="1d", auto_adjust=True)
-
-    # Fast info (robust vs legacy .info)
-    fast = {}
     try:
-        fast = tk.fast_info or {}
-    except Exception:
-        fast = {}
+        # --- Get EPS ---
+        eps = info.get('trailingEps')
+        if not eps or eps <= 0:
+            return None, "EPS is zero or negative."
 
-    # Fundamentals (best-effort; yfinance varies by ticker)
-    fin = {}
+        # --- Estimate Growth Rate (g) ---
+        # We use Net Income growth over the last 4-5 years
+        net_income = financials.loc['Net Income']
+        if net_income.isnull().all() or len(net_income.dropna()) < 2:
+            return None, "Not enough Net Income data for growth calculation."
+
+        # Calculate year-over-year growth and get the average
+        growth_rates = net_income.pct_change().dropna()
+        # Cap growth rate at a reasonable level (e.g., 15%) to be conservative
+        avg_growth_rate = np.mean(growth_rates)
+        g = min(avg_growth_rate * 100, 15.0) 
+
+        # --- Apply Graham's Formula ---
+        # If growth is negative, we consider it zero for a more conservative valuation.
+        if g < 0:
+            g = 0
+
+        intrinsic_value = (eps * (8.5 + 2 * g) * 4.4) / bond_yield
+        return intrinsic_value, "Success"
+
+    except (KeyError, IndexError, TypeError) as e:
+        return None, f"Missing data for calculation: {e}"
+
+def get_technical_indicators(history):
+    """Calculates key technical indicators (50D SMA, 200D SMA, 14D RSI)."""
     try:
-        # yfinance v0.2+ exposes .get_financials, .get_income_stmt, etc. as DataFrames
-        income = tk.income_stmt
-        bal = tk.balance_sheet
-        cash = tk.cashflow
-        fin = {
-            "income_stmt_cols": list(income.columns) if isinstance(income, pd.DataFrame) else [],
-            "balance_sheet_cols": list(bal.columns) if isinstance(bal, pd.DataFrame) else [],
-            "cashflow_cols": list(cash.columns) if isinstance(cash, pd.DataFrame) else [],
-        }
-    except Exception:
-        pass
+        if len(history) < 200:
+            return {}, "Insufficient data (<200 days)."
+            
+        # --- SMAs ---
+        sma_50 = SMAIndicator(close=history['Close'], window=50).sma_indicator().iloc[-1]
+        sma_200 = SMAIndicator(close=history['Close'], window=200).sma_indicator().iloc[-1]
 
-    return {"hist": hist, "fast": fast, "fin": fin}
+        # --- RSI ---
+        rsi_14 = RSIIndicator(close=history['Close'], window=14).rsi().iloc[-1]
+        
+        return {
+            'SMA_50': sma_50,
+            'SMA_200': sma_200,
+            'RSI_14': rsi_14
+        }, "Success"
+    except Exception as e:
+        return {}, f"Error in technical calculation: {e}"
 
+def generate_signal(row):
+    """Generates a trading signal based on valuation and technicals."""
+    iv = row['Intrinsic Value']
+    price = row['Current Price']
+    sma_50 = row['SMA_50']
+    sma_200 = row['SMA_200']
 
-def compute_indicators(hist: pd.DataFrame) -> Dict[str, Any]:
-    if hist is None or hist.empty:
-        return {"error": "No price history"}
+    # Check for missing data
+    if any(pd.isna(val) for val in [iv, price, sma_50, sma_200]):
+        return "Not Available"
 
-    close = hist["Close"].dropna()
-    if len(close) < 60:
-        return {"error": "Insufficient history (need ~60+ days)"}
+    is_undervalued = price < iv
+    in_uptrend = price > sma_50 and price > sma_200
 
-    # Simple MAs
-    sma20 = close.rolling(20).mean()
-    sma50 = close.rolling(50).mean()
-    sma200 = close.rolling(200).mean()
+    if is_undervalued and in_uptrend:
+        return "Strong Buy"
+    if is_undervalued and price > sma_50:
+        return "Buy"
+    if is_undervalued and not in_uptrend:
+        return "Monitor (Undervalued, but in Downtrend)"
+    if not is_undervalued and in_uptrend:
+        return "Hold (Overvalued, but in Uptrend)"
+    if not is_undervalued and not in_uptrend:
+        return "Sell"
+    return "Hold"
 
-    # RSI
-    rsi = RSIIndicator(close, window=14).rsi()
+# ======================================================================================
+# STREAMLIT SIDEBAR & INPUTS
+# ======================================================================================
 
-    # MACD
-    macd_calc = MACD(close, window_slow=26, window_fast=12, window_sign=9)
-    macd = macd_calc.macd()
-    macd_signal = macd_calc.macd_signal()
-    macd_diff = macd_calc.macd_diff()
-
-    # 52w high/low
-    last_252 = close.tail(252)
-    high_52w = float(last_252.max())
-    low_52w = float(last_252.min())
-
-    last = float(close.iloc[-1])
-    above_50 = last > float(sma50.iloc[-1]) if not np.isnan(sma50.iloc[-1]) else False
-    above_200 = last > float(sma200.iloc[-1]) if not np.isnan(sma200.iloc[-1]) else False
-
-    # Volume trend
-    vol = hist["Volume"].dropna()
-    vol_avg_20 = float(vol.tail(20).mean()) if len(vol) >= 20 else float(vol.mean())
-    vol_last = float(vol.iloc[-1]) if len(vol) else np.nan
-    vol_ratio = (vol_last / vol_avg_20) if vol_avg_20 else np.nan
-
-    return {
-        "last_price": last,
-        "sma20": float(sma20.iloc[-1]) if not np.isnan(sma20.iloc[-1]) else None,
-        "sma50": float(sma50.iloc[-1]) if not np.isnan(sma50.iloc[-1]) else None,
-        "sma200": float(sma200.iloc[-1]) if not np.isnan(sma200.iloc[-1]) else None,
-        "rsi14": float(rsi.iloc[-1]) if not np.isnan(rsi.iloc[-1]) else None,
-        "macd": float(macd.iloc[-1]) if not np.isnan(macd.iloc[-1]) else None,
-        "macd_signal": float(macd_signal.iloc[-1]) if not np.isnan(macd_signal.iloc[-1]) else None,
-        "macd_hist": float(macd_diff.iloc[-1]) if not np.isnan(macd_diff.iloc[-1]) else None,
-        "52w_high": high_52w,
-        "52w_low": low_52w,
-        "above_sma50": above_50,
-        "above_sma200": above_200,
-        "volume_last": vol_last,
-        "volume_avg20": vol_avg_20,
-        "volume_ratio": float(vol_ratio) if not np.isnan(vol_ratio) else None,
-    }
-
-
-def extract_fundamentals(fast: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Pull whatever is reliably present in .fast_info (yfinance’s newer API).
-    Fields may be missing per ticker.
-    """
-    def safe(k, default=None):
-        v = fast.get(k, default)
+with st.sidebar:
+    st.header("⚙️ Analysis Configuration")
+    
+    uploaded_file = st.file_uploader("Upload your Excel file", type=["xlsx", "xls"])
+    
+    if uploaded_file:
         try:
-            return float(v)
-        except Exception:
-            return v
-
-    out = {
-        "market_cap": safe("market_cap"),
-        "pe_ratio": safe("trailing_pe"),
-        "forward_pe": safe("forward_pe"),
-        "pb_ratio": safe("price_to_book"),
-        "dividend_yield": safe("dividend_yield"),
-    }
-    return out
-
-
-# =========================
-# Agent (LLM) Setup
-# =========================
-def build_agent() -> AssistantAgent:
-    if st.session_state.model_client is None:
-        st.session_state.model_client = OpenAIChatCompletionClient(
-            model="gpt-4o-mini",
-            api_key=OPENAI_API_KEY,
-            temperature=0.3,  # more deterministic for decisions
-        )
-
-    system_message = (
-        "You are a disciplined equity research assistant. You will be given:\n"
-        "1) Technical indicators (RSI, MACD, SMAs, 52w range, volume ratio)\n"
-        "2) Fundamental signals (PE, PB, market cap, dividend yield)\n\n"
-        "Output strict JSON with fields:\n"
-        "{\n"
-        '  "action": "BUY" | "HOLD" | "SELL",\n'
-        '  "confidence": 0-100,\n'
-        '  "technical_summary": "…",\n'
-        '  "fundamental_summary": "…",\n'
-        '  "risks": ["…", "…"],\n'
-        '  "notes": "…"\n'
-        "}\n\n"
-        "Rules:\n"
-        "- Combine both technical + fundamental signals.\n"
-        "- Favor BUY if trend is positive (price > SMA50 & SMA200, MACD>=0, RSI 45–65) and valuation not excessive (PE or PB reasonable vs sector).\n"
-        "- Favor SELL if trend is negative (price < SMA200, MACD<0, RSI<40) or valuation/risks are severe.\n"
-        "- Otherwise HOLD.\n"
-        "- Be conservative if data is missing.\n"
-        "- JSON only. No markdown, no extra text."
-    )
-    agent = AssistantAgent(
-        name="stock_agent",
-        system_message=system_message,
-        model_client=st.session_state.model_client,
-    )
-    return agent
-
-
-async def _ask_agent_async(agent: AssistantAgent, payload: Dict[str, Any]) -> str:
-    # We use a 1-agent "team" just to reuse the same run loop style if you later add more tools/agents
-    team = RoundRobinGroupChat([agent], max_turns=1)
-    msg = json.dumps(payload)
-    result = await team.run(task=msg)
-    # get last message
-    if result.messages:
-        return result.messages[-1].content
-    return ""
-
-
-def ask_agent(agent: AssistantAgent, payload: Dict[str, Any]) -> str:
-    loop = st.session_state.loop
-    asyncio.set_event_loop(loop)
-    return loop.run_until_complete(_ask_agent_async(agent, payload))
-
-
-# =========================
-# UI
-# =========================
-col = st.columns([2, 1, 1])
-with col[0]:
-    symbol = st.text_input("Ticker symbol", value="", placeholder="e.g., AAPL")
-
-with col[1]:
-    lookback = st.selectbox("Price lookback", ["1y", "6mo", "3mo"], index=0)
-
-with col[2]:
-    run_btn = st.button("Analyze", type="primary", use_container_width=True, disabled=(not symbol.strip()))
-
-st.divider()
-
-if run_btn:
-    ticker = symbol.strip().upper()
-    with st.spinner(f"Fetching and analyzing {ticker}…"):
-        try:
-            data = fetch_stock_data(ticker)
-            hist = data["hist"]
-            fast = data["fast"]
-
-            if hist is None or hist.empty:
-                st.error("No price data found for this symbol.")
-            else:
-                # Trim lookback for display
-                if lookback == "6mo":
-                    hist_disp = hist.tail(126)  # ~126 trading days
-                elif lookback == "3mo":
-                    hist_disp = hist.tail(63)
-                else:
-                    hist_disp = hist
-
-                inds = compute_indicators(hist)
-                fins = extract_fundamentals(fast)
-                payload = {
-                    "symbol": ticker,
-                    "as_of": datetime.utcnow().isoformat() + "Z",
-                    "technical": inds,
-                    "fundamental": fins,
-                }
-
-                # Show raw metrics
-                st.subheader(f"{ticker} – Key Metrics")
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown("**Technical**")
-                    st.json(inds, expanded=False)
-                with c2:
-                    st.markdown("**Fundamental**")
-                    st.json(fins, expanded=False)
-
-                # Chart
-                st.markdown("**Price (Adj Close)**")
-                st.line_chart(hist_disp["Close"])
-
-                # Call agent for decision
-                agent = build_agent()
-                raw = ask_agent(agent, payload)
-
-                # Try parse
-                decision = None
-                try:
-                    decision = json.loads(raw)
-                except Exception:
-                    # Sometimes models add stray characters—try a crude fix:
-                    try:
-                        start = raw.find("{")
-                        end = raw.rfind("}")
-                        if start != -1 and end != -1:
-                            decision = json.loads(raw[start:end+1])
-                    except Exception:
-                        decision = None
-
-                if not decision or not isinstance(decision, dict) or "action" not in decision:
-                    st.error("Agent returned an invalid response. Showing raw output.")
-                    st.code(raw)
-                else:
-                    st.session_state.latest_json = decision
-                    a = decision.get("action", "HOLD")
-                    conf = decision.get("confidence", 50)
-                    st.success(f"**Recommendation: {a}** (confidence: {conf}/100)")
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.markdown("**Technical Summary**")
-                        st.write(decision.get("technical_summary", ""))
-                    with c2:
-                        st.markdown("**Fundamental Summary**")
-                        st.write(decision.get("fundamental_summary", ""))
-
-                    if decision.get("risks"):
-                        st.markdown("**Risks**")
-                        st.write("- " + "\n- ".join(decision["risks"]))
-                    if decision.get("notes"):
-                        st.markdown("**Notes**")
-                        st.write(decision["notes"])
-
+            df_sample = pd.read_excel(uploaded_file, nrows=5)
+            st.markdown("Detected Columns:")
+            st.dataframe(df_sample.columns.to_frame().T, hide_index=True)
+            ticker_column = st.text_input(
+                "Enter the column name containing NSE Tickers:", 
+                value=df_sample.columns[0]
+            )
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Could not read the Excel file. Error: {e}")
+            ticker_column = None
+    else:
+        ticker_column = None
 
-# Footer / debug
-st.divider()
-st.caption("Data via yfinance. This is educational, not financial advice.")
+    bond_yield = st.number_input(
+        "Current AAA Corporate Bond Yield (%)", 
+        min_value=0.1, max_value=15.0, value=7.5, step=0.1,
+        help="This is 'Y' in Graham's formula. A higher yield leads to a more conservative (lower) intrinsic value."
+    )
+    
+    analyze_button = st.button("🚀 Run Analysis", disabled=(not uploaded_file or not ticker_column))
+
+# ======================================================================================
+# MAIN APP LOGIC & DISPLAY
+# ======================================================================================
+
+if analyze_button:
+    try:
+        df = pd.read_excel(uploaded_file)
+        if ticker_column not in df.columns:
+            st.error(f"The column '{ticker_column}' was not found in the uploaded file. Please check the name.")
+        else:
+            tickers = df[ticker_column].dropna().unique()
+            results = []
+            
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            for i, ticker in enumerate(tickers):
+                full_ticker = f"{ticker}.NS"
+                status_text.text(f"Analyzing {i+1}/{len(tickers)}: {full_ticker}")
+
+                try:
+                    stock = yf.Ticker(full_ticker)
+                    
+                    # --- Fetch Data ---
+                    info = stock.info
+                    financials = stock.financials
+                    history = stock.history(period="2y") # 2 years of data for indicators
+
+                    if history.empty or financials.empty:
+                        raise ValueError("No historical or financial data found.")
+
+                    current_price = info.get('currentPrice', history['Close'].iloc[-1])
+                    
+                    # --- Calculations ---
+                    iv, iv_status = calculate_graham_intrinsic_value(info, financials, bond_yield)
+                    tech, tech_status = get_technical_indicators(history)
+
+                    results.append({
+                        'Ticker': ticker,
+                        'Current Price': current_price,
+                        'Intrinsic Value': iv,
+                        'IV Status': iv_status,
+                        'SMA_50': tech.get('SMA_50'),
+                        'SMA_200': tech.get('SMA_200'),
+                        'RSI_14': tech.get('RSI_14'),
+                        'Tech Status': tech_status
+                    })
+
+                except Exception as e:
+                    results.append({'Ticker': ticker, 'Current Price': None, 'IV Status': f"Error: {e}"})
+
+                progress_bar.progress((i + 1) / len(tickers))
+
+            status_text.text("Analysis complete!")
+            
+            # --- Display Results Table ---
+            if results:
+                results_df = pd.DataFrame(results).set_index('Ticker')
+                results_df['Signal'] = results_df.apply(generate_signal, axis=1)
+                
+                # --- Styling for the results table ---
+                def style_signal(val):
+                    color = 'gray'
+                    if 'Buy' in val: color = 'green'
+                    elif 'Sell' in val: color = 'red'
+                    elif 'Monitor' in val: color = 'orange'
+                    return f'color: {color}; font-weight: bold;'
+
+                st.subheader("📊 Analysis Summary")
+                st.dataframe(results_df.style.applymap(style_signal, subset=['Signal'])
+                                           .format({
+                                               'Current Price': '₹{:.2f}',
+                                               'Intrinsic Value': '₹{:.2f}',
+                                               'SMA_50': '{:.2f}',
+                                               'SMA_200': '{:.2f}',
+                                               'RSI_14': '{:.1f}'
+                                           }), use_container_width=True)
+                
+                # --- Detailed View Section ---
+                st.subheader("🔍 Detailed Stock View")
+                selected_stock = st.selectbox("Select a stock to view details:", results_df.index)
+                
+                if selected_stock:
+                    stock_data = results_df.loc[selected_stock]
+                    stock_history = yf.Ticker(f"{selected_stock}.NS").history(period="2y")
+                    
+                    # Display metrics
+                    st.write(f"**Signal for {selected_stock}: {stock_data['Signal']}**")
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Current Price", f"₹{stock_data['Current Price']:.2f}")
+                    col2.metric("Intrinsic Value", f"₹{stock_data['Intrinsic Value']:.2f}" if pd.notna(stock_data['Intrinsic Value']) else "N/A")
+                    col3.metric("RSI (14)", f"{stock_data['RSI_14']:.1f}" if pd.notna(stock_data['RSI_14']) else "N/A")
+
+                    # Create Plotly chart
+                    fig = go.Figure(data=[go.Candlestick(x=stock_history.index,
+                                    open=stock_history['Open'],
+                                    high=stock_history['High'],
+                                    low=stock_history['Low'],
+                                    close=stock_history['Close'], name='Price')])
+
+                    fig.add_trace(go.Scatter(x=stock_history.index, y=stock_history['Close'].rolling(window=50).mean(), mode='lines', name='50-Day SMA', line=dict(color='orange', width=1.5)))
+                    fig.add_trace(go.Scatter(x=stock_history.index, y=stock_history['Close'].rolling(window=200).mean(), mode='lines', name='200-Day SMA', line=dict(color='purple', width=1.5)))
+                    fig.update_layout(title=f'{selected_stock} Price Chart with Indicators',
+                                      yaxis_title='Price (INR)',
+                                      xaxis_rangeslider_visible=False)
+                    st.plotly_chart(fig, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"An error occurred during analysis: {e}")
+
+else:
+    st.info("Please upload an Excel file and click 'Run Analysis' to begin.")
