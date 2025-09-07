@@ -179,7 +179,7 @@ def display_stock_analysis(ticker):
         
         # --- NEW: Calculate Move within FY ---
         current_price = history['Close'].iloc[-1]
-        price_mar_31 = get_price_on_date(daily_history, '2025-03-31')
+        price_mar_31 = get_price_on_date(daily_history, '2025-03-28')
         move_fy_percent = None
         if price_mar_31 and current_price:
             move_fy_percent = ((current_price - price_mar_31) / price_mar_31) * 100
