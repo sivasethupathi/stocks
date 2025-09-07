@@ -17,7 +17,7 @@ from ta.volume import OnBalanceVolumeIndicator
 # ======================================================================================
 st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
 
-st.title("📈 Integrated Stock Analyzer")
+st.title("Stock Analyzer | SIVASETHUPATHI MARIAPPAN")
 st.markdown("Select an industry from your Excel file to get a consolidated analysis, including financial ratios from **Screener.in** and a detailed **Swing Trading** recommendation.")
 
 # ======================================================================================
@@ -179,22 +179,25 @@ def display_stock_analysis(ticker):
         swing_indicators, swing_recommendation, _ = calculate_swing_trade_analysis(history)
         intrinsic_value = calculate_graham_intrinsic_value(info, financials)
         
-        # --- NEW: Calculate Move within FY ---
+        # --- UPDATED: Calculate and display Move within FY more clearly ---
         current_price = history['Close'].iloc[-1]
-        price_mar_31, date_mar_31 = get_price_on_date(daily_history, '2025-03-31')
+        price_mar_28, date_mar_28 = get_price_on_date(daily_history, '2025-03-28')
+        
         move_fy_percent = None
-        if price_mar_31 and current_price:
-            move_fy_percent = ((current_price - price_mar_31) / price_mar_31) * 100
+        fy_delta_text = "N/A"
+        if price_mar_28 and current_price:
+            move_fy_percent = ((current_price - price_mar_28) / price_mar_28) * 100
+            fy_delta_text = f"from ₹{price_mar_28:,.2f} on {date_mar_28.strftime('%d-%b-%Y')}"
 
-        # --- UPDATED: Top Metrics Row with 5 columns ---
         m_col1, m_col2, m_col3, m_col4, m_col5 = st.columns(5)
         m_col1.metric("Current Price", f"₹{current_price:,.2f}")
         m_col2.metric("Swing Signal", swing_recommendation)
         m_col3.metric("Intrinsic Value", f"₹{intrinsic_value:,.2f}" if intrinsic_value else "N/A")
-        
-        fy_label = f"Move within FY (since {date_mar_31.strftime('%d-%b-%Y')})" if date_mar_31 else "Move within FY"
-        m_col4.metric(fy_label, f"{move_fy_percent:.2f}%" if move_fy_percent is not None else "N/A", delta_color="off")
-        
+        m_col4.metric(
+            label="Move within FY", 
+            value=f"{move_fy_percent:.2f}%" if move_fy_percent is not None else "N/A",
+            delta=fy_delta_text
+        )
         m_col5.metric("Buy Price (≈20W SMA)", f"₹{swing_indicators['20-Week SMA']:,.2f}" if swing_indicators else "N/A")
 
         st.divider()
