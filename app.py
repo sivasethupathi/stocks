@@ -28,10 +28,25 @@ st.markdown("Select an industry from your Excel file to get a consolidated analy
 def get_stock_data(ticker):
     """Fetches all necessary data for a stock from yfinance."""
     stock = yf.Ticker(f"{ticker}.NS")
-    history = stock.history(period="3y", interval="1wk")
+    # Fetch weekly data for swing analysis
+    history_weekly = stock.history(period="3y", interval="1wk")
+    # Fetch daily data for historical price lookup
+    history_daily = stock.history(period="1y", interval="1d")
     info = stock.info
     financials = stock.financials
-    return history, info, financials
+    return history_weekly, info, financials, history_daily
+
+@st.cache_data(ttl=3600)
+def get_price_on_date(daily_history, target_date_str):
+    """Finds the closest closing price to a target date from daily history."""
+    try:
+        target_date = pd.to_datetime(target_date_str)
+        # Find the index position of the closest date
+        closest_date_index = daily_history.index.get_indexer([target_date], method='nearest')[0]
+        # Get the closing price for that date
+        return daily_history.iloc[closest_date_index]['Close']
+    except Exception:
+        return None
 
 @st.cache_data(ttl=3600)
 def scrape_screener_data(ticker):
@@ -69,7 +84,6 @@ def calculate_graham_intrinsic_value(info, financials, bond_yield=7.5):
     except (KeyError, IndexError, TypeError):
         return None
 
-# --- UPDATED: SWING TRADING ALGORITHM NOW PROVIDES REASONING ---
 def calculate_swing_trade_analysis(history):
     """
     Calculates swing trading indicators and generates a recommendation with reasoning.
@@ -80,7 +94,6 @@ def calculate_swing_trade_analysis(history):
     close = history['Close']
     price = close.iloc[-1]
     
-    # --- 1. Calculate indicators ---
     sma_20 = close.rolling(window=20).mean().iloc[-1]
     sma_50 = close.rolling(window=50).mean().iloc[-1]
     rsi_14 = RSIIndicator(close, window=14).rsi().iloc[-1]
@@ -101,11 +114,9 @@ def calculate_swing_trade_analysis(history):
         "Bollinger High": bb_high, "Bollinger Low": bb_low, "OBV Trend": obv_slope, "ATR (14)": atr_14
     }
 
-    # --- 2. Scoring Algorithm with Reasoning ---
     score = 0
     reasons = []
     
-    # Trend Signals
     if price > sma_20: score += 2; reasons.append("✅ Price is above the 20-week SMA (Strong short-term trend).")
     else: reasons.append("❌ Price is below the 20-week SMA (Bearish short-term trend).")
     if sma_20 > sma_50: score += 2; reasons.append("✅ 20-week SMA is above the 50-week SMA (Golden Cross).")
@@ -113,20 +124,16 @@ def calculate_swing_trade_analysis(history):
     if macd_line > macd_signal: score += 1; reasons.append("✅ MACD line is above the signal line (Bullish momentum).")
     else: reasons.append("❌ MACD line is below the signal line (Bearish momentum).")
     
-    # Momentum Signals
     if 45 < rsi_14 < 68: score += 2; reasons.append(f"✅ RSI is healthy at {rsi_14:.1f} (Not overbought/oversold).")
     elif rsi_14 >= 68: reasons.append(f"⚠️ RSI is high at {rsi_14:.1f} (Approaching overbought).")
     else: reasons.append(f"❌ RSI is weak at {rsi_14:.1f} (Bearish momentum).")
     if macd_hist > 0: score += 1; reasons.append("✅ MACD histogram is positive (Increasing bullish momentum).")
     
-    # Volume Confirmation
     if obv_slope > 0: score += 2; reasons.append("✅ On-Balance Volume trend is positive (Volume confirms price trend).")
     else: reasons.append("❌ On-Balance Volume trend is negative (Volume does not confirm price trend).")
 
-    # Entry Point Signal
     if price <= bb_low: score += 1; reasons.append("💡 Price is near the lower Bollinger Band (Potential bounce/support).")
     
-    # --- 3. Generate Final Recommendation ---
     if score >= 7: recommendation = "Strong Buy"
     elif score >= 5: recommendation = "Buy"
     elif score >= 3: recommendation = "Hold / Monitor"
@@ -134,21 +141,19 @@ def calculate_swing_trade_analysis(history):
         
     return indicators, recommendation, "\n\n".join(reasons)
 
-# --- NEW: Function to get top signals for the sidebar ---
 @st.cache_data(ttl=3600)
 def calculate_quick_signals(df, ticker_col):
     """Analyzes all stocks in the dataframe to find top buy/sell signals."""
     tickers = df[ticker_col].dropna().unique()
     all_signals = []
-    # Limit analysis to a smaller number for speed in the sidebar, e.g., first 50
     for ticker in tickers[:50]: 
         try:
-            history, _, _ = get_stock_data(ticker)
+            history, _, _, _ = get_stock_data(ticker)
             if not history.empty and len(history) >= 52:
                 _, recommendation, _ = calculate_swing_trade_analysis(history)
                 all_signals.append({'Ticker': ticker, 'Signal': recommendation})
         except Exception:
-            continue # Skip stocks with errors
+            continue
     
     if not all_signals:
         return pd.DataFrame(), pd.DataFrame()
@@ -159,31 +164,36 @@ def calculate_quick_signals(df, ticker_col):
     
     return buy_signals, sell_signals
 
-# --- UPDATED: REDESIGNED LAYOUT FOR SINGLE STOCK VIEW ---
 def display_stock_analysis(ticker):
     """Function to display analysis for a single stock with a redesigned layout."""
     try:
-        history, info, financials = get_stock_data(ticker)
+        history, info, financials, daily_history = get_stock_data(ticker)
         if history.empty:
             st.warning(f"Could not fetch price history for **{ticker}**. Skipping.")
             return
 
-        # --- Main Header for the stock ---
         st.header(f"Analysis for: {info.get('shortName', ticker)} ({ticker})", divider='rainbow')
 
-        # --- Top Metrics Row ---
         swing_indicators, swing_recommendation, _ = calculate_swing_trade_analysis(history)
         intrinsic_value = calculate_graham_intrinsic_value(info, financials)
         
-        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
-        m_col1.metric("Current Price", f"₹{history['Close'].iloc[-1]:,.2f}")
+        # --- NEW: Calculate Move within FY ---
+        current_price = history['Close'].iloc[-1]
+        price_mar_31 = get_price_on_date(daily_history, '2025-03-31')
+        move_fy_percent = None
+        if price_mar_31 and current_price:
+            move_fy_percent = ((current_price - price_mar_31) / price_mar_31) * 100
+
+        # --- UPDATED: Top Metrics Row with 5 columns ---
+        m_col1, m_col2, m_col3, m_col4, m_col5 = st.columns(5)
+        m_col1.metric("Current Price", f"₹{current_price:,.2f}")
         m_col2.metric("Swing Signal", swing_recommendation)
         m_col3.metric("Intrinsic Value", f"₹{intrinsic_value:,.2f}" if intrinsic_value else "N/A")
-        m_col4.metric("Buy Price (≈20W SMA)", f"₹{swing_indicators['20-Week SMA']:,.2f}" if swing_indicators else "N/A")
+        m_col4.metric("Move within FY", f"{move_fy_percent:.2f}%" if move_fy_percent is not None else "N/A", delta_color="off")
+        m_col5.metric("Buy Price (≈20W SMA)", f"₹{swing_indicators['20-Week SMA']:,.2f}" if swing_indicators else "N/A")
 
         st.divider()
 
-        # --- Main Content Area: Chart and Analysis ---
         chart_col, analysis_col = st.columns([2, 1])
 
         with chart_col:
@@ -197,16 +207,13 @@ def display_stock_analysis(ticker):
             st.plotly_chart(fig, use_container_width=True)
         
         with analysis_col:
-            # --- Swing Trade Analysis Details ---
             st.subheader("Swing Signal Reasoning")
             _, _, swing_reasoning = calculate_swing_trade_analysis(history)
             st.info(swing_reasoning)
 
-            # --- Screener Ratios ---
             st.subheader("Key Financial Ratios")
             screener_data, screener_status = scrape_screener_data(ticker)
             if screener_status == "Success":
-                # Reformat for better presentation
                 df_screener = pd.DataFrame(screener_data.items(), columns=['Ratio', 'Value'])
                 st.dataframe(df_screener, use_container_width=True, hide_index=True)
             else:
@@ -222,7 +229,6 @@ EXCEL_FILE_PATH = "SELECTED STOCKS 22FEB2025.xlsx"
 TICKER_COLUMN_NAME = "NSE SYMBOL"
 INDUSTRY_COLUMN_NAME = "INDUSTRY"
 
-# --- Initialize session state ---
 if 'current_stock_index' not in st.session_state:
     st.session_state.current_stock_index = 0
 if 'ticker_list' not in st.session_state:
@@ -230,7 +236,6 @@ if 'ticker_list' not in st.session_state:
 if 'quick_signals_calculated' not in st.session_state:
     st.session_state.quick_signals_calculated = False
 
-# --- Sidebar UI ---
 if not os.path.exists(EXCEL_FILE_PATH):
     st.error(f"Error: The file '{EXCEL_FILE_PATH}' was not found.")
 else:
@@ -245,9 +250,8 @@ else:
                 df_filtered = df_full[df_full[INDUSTRY_COLUMN_NAME] == selected_industry] if selected_industry != "All Industries" else df_full
                 st.session_state.ticker_list = df_filtered[TICKER_COLUMN_NAME].dropna().unique().tolist()
                 st.session_state.current_stock_index = 0
-                st.session_state.quick_signals_calculated = True # Trigger the calculation
+                st.session_state.quick_signals_calculated = True
                 
-            # Display quick signals after analysis is run
             if st.session_state.quick_signals_calculated:
                 with st.spinner("Calculating market snapshot..."):
                     buy_signals, sell_signals = calculate_quick_signals(df_full, TICKER_COLUMN_NAME)
@@ -270,11 +274,9 @@ else:
         except Exception as e:
             st.error(f"Could not read the Excel file. Error: {e}")
 
-    # --- Main Display Area ---
     if st.session_state.ticker_list:
         current_ticker = st.session_state.ticker_list[st.session_state.current_stock_index]
         
-        # Navigation Buttons
         col1, col2, col3 = st.columns([1.5, 5, 1.5])
         with col1:
             if st.button("⬅️ Previous Stock", use_container_width=True, disabled=(st.session_state.current_stock_index == 0)):
