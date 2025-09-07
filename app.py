@@ -17,7 +17,7 @@ from ta.volume import OnBalanceVolumeIndicator
 # ======================================================================================
 st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
 
-st.title("📈 Integrated Stock Analyzer")
+st.title("Stock Analyzer by SIVASETHUPATHI")
 st.markdown("Select an industry from your Excel file to get a consolidated analysis, including financial ratios from **Screener.in** and a detailed **Swing Trading** recommendation.")
 
 # ======================================================================================
@@ -69,34 +69,30 @@ def calculate_graham_intrinsic_value(info, financials, bond_yield=7.5):
     except (KeyError, IndexError, TypeError):
         return None
 
-# --- NEW: SWING TRADING ALGORITHM FUNCTION ---
+# --- UPDATED: SWING TRADING ALGORITHM NOW PROVIDES REASONING ---
 def calculate_swing_trade_analysis(history):
     """
-    Calculates a comprehensive set of swing trading indicators and generates a recommendation.
+    Calculates swing trading indicators and generates a recommendation with reasoning.
     """
-    if len(history) < 52: # Need at least a year of weekly data
-        return None, "Insufficient weekly data for full analysis."
+    if len(history) < 52:
+        return None, "Insufficient Data", "Not enough weekly data for full analysis."
 
-    # --- 1. Calculate all indicators ---
     close = history['Close']
-    # Moving Averages
+    price = close.iloc[-1]
+    
+    # --- 1. Calculate indicators ---
     sma_20 = close.rolling(window=20).mean().iloc[-1]
     sma_50 = close.rolling(window=50).mean().iloc[-1]
-    # RSI
     rsi_14 = RSIIndicator(close, window=14).rsi().iloc[-1]
-    # MACD
     macd_indicator = MACD(close, window_slow=26, window_fast=12, window_sign=9)
     macd_line = macd_indicator.macd().iloc[-1]
     macd_signal = macd_indicator.macd_signal().iloc[-1]
     macd_hist = macd_indicator.macd_diff().iloc[-1]
-    # Bollinger Bands
     bb_indicator = BollingerBands(close, window=20, window_dev=2)
     bb_high = bb_indicator.bollinger_hband().iloc[-1]
     bb_low = bb_indicator.bollinger_lband().iloc[-1]
-    # Volume
     obv_indicator = OnBalanceVolumeIndicator(close, history['Volume'])
     obv_slope = obv_indicator.on_balance_volume().diff().rolling(window=5).mean().iloc[-1]
-    # Volatility
     atr_14 = AverageTrueRange(history['High'], history['Low'], close, window=14).average_true_range().iloc[-1]
 
     indicators = {
@@ -105,37 +101,86 @@ def calculate_swing_trade_analysis(history):
         "Bollinger High": bb_high, "Bollinger Low": bb_low, "OBV Trend": obv_slope, "ATR (14)": atr_14
     }
 
-    # --- 2. Algorithm for Buy/Sell Recommendation ---
+    # --- 2. Scoring Algorithm with Reasoning ---
     score = 0
-    price = close.iloc[-1]
+    reasons = []
     
-    # Trend Signals (Max 5 points)
-    if price > sma_20: score += 2
-    if sma_20 > sma_50: score += 2
-    if macd_line > macd_signal: score += 1
+    # Trend Signals
+    if price > sma_20: score += 2; reasons.append("✅ Price is above the 20-week SMA (Strong short-term trend).")
+    else: reasons.append("❌ Price is below the 20-week SMA (Bearish short-term trend).")
+    if sma_20 > sma_50: score += 2; reasons.append("✅ 20-week SMA is above the 50-week SMA (Golden Cross).")
+    else: reasons.append("❌ 20-week SMA is below the 50-week SMA (Death Cross).")
+    if macd_line > macd_signal: score += 1; reasons.append("✅ MACD line is above the signal line (Bullish momentum).")
+    else: reasons.append("❌ MACD line is below the signal line (Bearish momentum).")
     
-    # Momentum Signals (Max 3 points)
-    if 45 < rsi_14 < 68: score += 2 # Strong, but not overbought
-    if macd_hist > 0: score += 1
+    # Momentum Signals
+    if 45 < rsi_14 < 68: score += 2; reasons.append(f"✅ RSI is healthy at {rsi_14:.1f} (Not overbought/oversold).")
+    elif rsi_14 >= 68: reasons.append(f"⚠️ RSI is high at {rsi_14:.1f} (Approaching overbought).")
+    else: reasons.append(f"❌ RSI is weak at {rsi_14:.1f} (Bearish momentum).")
+    if macd_hist > 0: score += 1; reasons.append("✅ MACD histogram is positive (Increasing bullish momentum).")
+    
+    # Volume Confirmation
+    if obv_slope > 0: score += 2; reasons.append("✅ On-Balance Volume trend is positive (Volume confirms price trend).")
+    else: reasons.append("❌ On-Balance Volume trend is negative (Volume does not confirm price trend).")
 
-    # Volume Confirmation (Max 2 points)
-    if obv_slope > 0: score += 2
-
-    # Entry Point Signal (Bonus for pullbacks)
-    if price < sma_20 and price > sma_50 and rsi_14 < 55: score += 1 # Dip buy opportunity
-    if price <= bb_low: score += 1 # Near support
-
+    # Entry Point Signal
+    if price <= bb_low: score += 1; reasons.append("💡 Price is near the lower Bollinger Band (Potential bounce/support).")
+    
     # --- 3. Generate Final Recommendation ---
-    if score >= 7:
-        recommendation = "Strong Buy"
-    elif score >= 5:
-        recommendation = "Buy"
-    elif score >= 3:
-        recommendation = "Hold / Monitor"
-    else:
-        recommendation = "Sell / Avoid"
+    if score >= 7: recommendation = "Strong Buy"
+    elif score >= 5: recommendation = "Buy"
+    elif score >= 3: recommendation = "Hold / Monitor"
+    else: recommendation = "Sell / Avoid"
         
-    return indicators, recommendation
+    return indicators, recommendation, "\n\n".join(reasons)
+
+# --- Function to display analysis for a single stock ---
+def display_stock_analysis(ticker):
+    try:
+        history, info, financials = get_stock_data(ticker)
+        if history.empty:
+            st.warning(f"Could not fetch price history for **{ticker}**. Skipping.")
+            return
+
+        st.header(f"Analysis for: {ticker}", divider='rainbow')
+
+        col1, col2 = st.columns([1, 2])
+        
+        with col1:
+            st.subheader("Swing Trade Analysis (Weekly)")
+            swing_indicators, swing_recommendation, swing_reasoning = calculate_swing_trade_analysis(history)
+            
+            if swing_indicators:
+                st.metric("Recommendation", swing_recommendation)
+                st.info(swing_reasoning)
+                st.dataframe(pd.DataFrame(swing_indicators.items(), columns=['Indicator', 'Value']).set_index('Indicator'))
+            else:
+                st.warning("Not enough data for swing analysis.")
+            
+            st.subheader("Valuation")
+            intrinsic_value = calculate_graham_intrinsic_value(info, financials)
+            st.metric("Intrinsic Value (Graham)", f"₹{intrinsic_value:.2f}" if intrinsic_value else "N/A")
+            st.metric("Recommended Swing Buy Price (≈20W SMA)", f"₹{swing_indicators['20-Week SMA']:.2f}" if swing_indicators else "N/A")
+
+            st.subheader("Financial Ratios (from Screener.in)")
+            screener_data, screener_status = scrape_screener_data(ticker)
+            if screener_status == "Success":
+                st.table(pd.DataFrame(screener_data.items(), columns=['Ratio', 'Value']))
+            else:
+                st.warning(f"Could not scrape data ({screener_status}).")
+
+        with col2:
+            st.subheader("Weekly Price Chart")
+            fig = go.Figure(data=[go.Candlestick(x=history.index, open=history['Open'], high=history['High'], low=history['Low'], close=history['Close'], name='Price')])
+            history['SMA_20W'] = history['Close'].rolling(window=20).mean()
+            history['SMA_50W'] = history['Close'].rolling(window=50).mean()
+            fig.add_trace(go.Scatter(x=history.index, y=history['SMA_20W'], mode='lines', name='20-Week SMA', line=dict(color='orange', width=1.5)))
+            fig.add_trace(go.Scatter(x=history.index, y=history['SMA_50W'], mode='lines', name='50-Week SMA', line=dict(color='purple', width=1.5)))
+            fig.update_layout(yaxis_title='Price (INR)', xaxis_rangeslider_visible=False, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+            st.plotly_chart(fig, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"An error occurred while processing **{ticker}**: {e}")
 
 # ======================================================================================
 # STREAMLIT UI & LOGIC
@@ -143,6 +188,12 @@ def calculate_swing_trade_analysis(history):
 EXCEL_FILE_PATH = "SELECTED STOCKS 22FEB2025.xlsx"
 TICKER_COLUMN_NAME = "NSE SYMBOL"
 INDUSTRY_COLUMN_NAME = "INDUSTRY"
+
+# --- Initialize session state for navigation ---
+if 'current_stock_index' not in st.session_state:
+    st.session_state.current_stock_index = 0
+if 'ticker_list' not in st.session_state:
+    st.session_state.ticker_list = []
 
 if not os.path.exists(EXCEL_FILE_PATH):
     st.error(f"Error: The file '{EXCEL_FILE_PATH}' was not found.")
@@ -153,68 +204,34 @@ else:
             df_full = pd.read_excel(EXCEL_FILE_PATH, sheet_name='Sheet1')
             industries = ["All Industries"] + sorted(df_full[INDUSTRY_COLUMN_NAME].dropna().unique().tolist())
             selected_industry = st.selectbox("Select an Industry:", industries)
-            analyze_button = st.button("🚀 Analyze Selected Industry", type="primary")
+            
+            if st.button("🚀 Analyze Selected Industry", type="primary"):
+                df_filtered = df_full[df_full[INDUSTRY_COLUMN_NAME] == selected_industry] if selected_industry != "All Industries" else df_full
+                st.session_state.ticker_list = df_filtered[TICKER_COLUMN_NAME].dropna().unique().tolist()
+                st.session_state.current_stock_index = 0
+
         except Exception as e:
             st.error(f"Could not read the Excel file. Error: {e}")
-            selected_industry = None; analyze_button = False
 
-    if analyze_button and selected_industry:
-        df_filtered = df_full[df_full[INDUSTRY_COLUMN_NAME] == selected_industry] if selected_industry != "All Industries" else df_full
-        tickers = df_filtered[TICKER_COLUMN_NAME].dropna().unique()
-        st.header(f"Analysis for: {selected_industry}")
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+    # --- Main Display Area ---
+    if st.session_state.ticker_list:
+        current_ticker = st.session_state.ticker_list[st.session_state.current_stock_index]
+        
+        # --- Navigation Buttons ---
+        col1, col2, col3 = st.columns([1, 5, 1])
+        with col1:
+            if st.button("⬅️ Previous Stock", use_container_width=True, disabled=(st.session_state.current_stock_index == 0)):
+                st.session_state.current_stock_index -= 1
+                st.rerun()
+        with col2:
+            st.write(f"Displaying **{st.session_state.current_stock_index + 1}** of **{len(st.session_state.ticker_list)}** stocks")
+        with col3:
+            if st.button("Next Stock ➡️", use_container_width=True, disabled=(st.session_state.current_stock_index >= len(st.session_state.ticker_list) - 1)):
+                st.session_state.current_stock_index += 1
+                st.rerun()
 
-        for i, ticker in enumerate(tickers):
-            status_text.text(f"Processing {i+1}/{len(tickers)}: {ticker}")
-            try:
-                history, info, financials = get_stock_data(ticker)
-                if history.empty: continue
-
-                with st.expander(f"▶️ **{ticker}** | Current Price: ₹{history['Close'].iloc[-1]:.2f}", expanded=(i==0)):
-                    col1, col2 = st.columns([1, 2])
-                    
-                    # --- Column 1: Ratios, Valuation, and Swing Analysis ---
-                    with col1:
-                        # --- Swing Trade Analysis ---
-                        st.subheader("Swing Trade Analysis (Weekly)")
-                        swing_indicators, swing_recommendation = calculate_swing_trade_analysis(history)
-                        
-                        if swing_indicators:
-                            st.metric("Recommendation", swing_recommendation)
-                            st.dataframe(pd.DataFrame(swing_indicators.items(), columns=['Indicator', 'Value']).set_index('Indicator'))
-                        else:
-                            st.warning("Not enough data for swing analysis.")
-                        
-                        # --- Valuation ---
-                        st.subheader("Valuation")
-                        intrinsic_value = calculate_graham_intrinsic_value(info, financials)
-                        st.metric("Intrinsic Value (Graham)", f"₹{intrinsic_value:.2f}" if intrinsic_value else "N/A")
-                        st.metric("Recommended Swing Buy Price (≈20W SMA)", f"₹{swing_indicators['20-Week SMA']:.2f}" if swing_indicators else "N/A")
-
-                        # --- Screener Ratios ---
-                        st.subheader("Financial Ratios (from Screener.in)")
-                        screener_data, screener_status = scrape_screener_data(ticker)
-                        if screener_status == "Success":
-                            st.table(pd.DataFrame(screener_data.items(), columns=['Ratio', 'Value']))
-                        else:
-                            st.warning(f"Could not scrape data ({screener_status}).")
-
-                    # --- Column 2: Chart ---
-                    with col2:
-                        st.subheader("Weekly Price Chart")
-                        fig = go.Figure(data=[go.Candlestick(x=history.index, open=history['Open'], high=history['High'], low=history['Low'], close=history['Close'], name='Price')])
-                        history['SMA_20W'] = history['Close'].rolling(window=20).mean()
-                        history['SMA_50W'] = history['Close'].rolling(window=50).mean()
-                        fig.add_trace(go.Scatter(x=history.index, y=history['SMA_20W'], mode='lines', name='20-Week SMA', line=dict(color='orange', width=1.5)))
-                        fig.add_trace(go.Scatter(x=history.index, y=history['SMA_50W'], mode='lines', name='50-Week SMA', line=dict(color='purple', width=1.5)))
-                        fig.update_layout(yaxis_title='Price (INR)', xaxis_rangeslider_visible=False, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-                        st.plotly_chart(fig, use_container_width=True)
-
-            except Exception as e:
-                st.error(f"An error occurred while processing **{ticker}**: {e}")
-            progress_bar.progress((i + 1) / len(tickers))
-        status_text.success("Analysis Complete!")
+        # Display the analysis for the current stock
+        display_stock_analysis(current_ticker)
     else:
         st.info("Select an industry from the sidebar and click the 'Analyze' button to begin.")
 
