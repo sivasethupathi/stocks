@@ -3,7 +3,7 @@ yfinance
 pandas
 numpy
 python-dotenv
-ta
+technical-analysis-library-ta
 pyautogen[agentchat]
 openai
 plotly
