@@ -230,7 +230,7 @@ def display_stock_analysis(ticker):
 # ======================================================================================
 # STREAMLIT UI & LOGIC
 # ======================================================================================
-EXCEL_FILE_PATH = "SELECTED STOCKS 2025.xlsx"
+EXCEL_FILE_PATH = "SELECTED STOCKS 22FEB2025.xlsx"
 TICKER_COLUMN_NAME = "NSE SYMBOL"
 INDUSTRY_COLUMN_NAME = "INDUSTRY"
 
