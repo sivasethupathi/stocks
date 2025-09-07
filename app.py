@@ -17,7 +17,7 @@ from ta.volume import OnBalanceVolumeIndicator
 # ======================================================================================
 st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
 
-st.title("📈 Integrated Stock Analyzer")
+st.title("Stock Analyzer | SIVASETHUPATHI MARIAPPAN")
 st.markdown("Select an industry from your Excel file to get a consolidated analysis, including financial ratios from **Screener.in** and a detailed **Swing Trading** recommendation.")
 
 # ======================================================================================
