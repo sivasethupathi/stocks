@@ -13,7 +13,7 @@ import re
 # ======================================================================================
 st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
 
-st.title("📈 Integrated Stock Analyzer")
+st.title("📈 Integrated Stock Analyzer for Only SIVASETHUPATHI - :D")
 st.markdown("Select an industry from your Excel file to get a consolidated analysis, including financial ratios from **Screener.in** and weekly trading charts.")
 
 # ======================================================================================
