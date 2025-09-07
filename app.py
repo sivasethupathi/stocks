@@ -17,7 +17,7 @@ from ta.volume import OnBalanceVolumeIndicator
 # ======================================================================================
 st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
 
-st.title("Stock Analyzer by SIVASETHUPATHI")
+st.title("📈 Integrated Stock Analyzer")
 st.markdown("Select an industry from your Excel file to get a consolidated analysis, including financial ratios from **Screener.in** and a detailed **Swing Trading** recommendation.")
 
 # ======================================================================================
@@ -69,7 +69,6 @@ def calculate_graham_intrinsic_value(info, financials, bond_yield=7.5):
     except (KeyError, IndexError, TypeError):
         return None
 
-# --- UPDATED: SWING TRADING ALGORITHM NOW PROVIDES REASONING ---
 def calculate_swing_trade_analysis(history):
     """
     Calculates swing trading indicators and generates a recommendation with reasoning.
@@ -80,7 +79,6 @@ def calculate_swing_trade_analysis(history):
     close = history['Close']
     price = close.iloc[-1]
     
-    # --- 1. Calculate indicators ---
     sma_20 = close.rolling(window=20).mean().iloc[-1]
     sma_50 = close.rolling(window=50).mean().iloc[-1]
     rsi_14 = RSIIndicator(close, window=14).rsi().iloc[-1]
@@ -101,11 +99,9 @@ def calculate_swing_trade_analysis(history):
         "Bollinger High": bb_high, "Bollinger Low": bb_low, "OBV Trend": obv_slope, "ATR (14)": atr_14
     }
 
-    # --- 2. Scoring Algorithm with Reasoning ---
     score = 0
     reasons = []
     
-    # Trend Signals
     if price > sma_20: score += 2; reasons.append("✅ Price is above the 20-week SMA (Strong short-term trend).")
     else: reasons.append("❌ Price is below the 20-week SMA (Bearish short-term trend).")
     if sma_20 > sma_50: score += 2; reasons.append("✅ 20-week SMA is above the 50-week SMA (Golden Cross).")
@@ -113,20 +109,16 @@ def calculate_swing_trade_analysis(history):
     if macd_line > macd_signal: score += 1; reasons.append("✅ MACD line is above the signal line (Bullish momentum).")
     else: reasons.append("❌ MACD line is below the signal line (Bearish momentum).")
     
-    # Momentum Signals
     if 45 < rsi_14 < 68: score += 2; reasons.append(f"✅ RSI is healthy at {rsi_14:.1f} (Not overbought/oversold).")
     elif rsi_14 >= 68: reasons.append(f"⚠️ RSI is high at {rsi_14:.1f} (Approaching overbought).")
     else: reasons.append(f"❌ RSI is weak at {rsi_14:.1f} (Bearish momentum).")
     if macd_hist > 0: score += 1; reasons.append("✅ MACD histogram is positive (Increasing bullish momentum).")
     
-    # Volume Confirmation
     if obv_slope > 0: score += 2; reasons.append("✅ On-Balance Volume trend is positive (Volume confirms price trend).")
     else: reasons.append("❌ On-Balance Volume trend is negative (Volume does not confirm price trend).")
 
-    # Entry Point Signal
     if price <= bb_low: score += 1; reasons.append("💡 Price is near the lower Bollinger Band (Potential bounce/support).")
     
-    # --- 3. Generate Final Recommendation ---
     if score >= 7: recommendation = "Strong Buy"
     elif score >= 5: recommendation = "Buy"
     elif score >= 3: recommendation = "Hold / Monitor"
@@ -134,8 +126,32 @@ def calculate_swing_trade_analysis(history):
         
     return indicators, recommendation, "\n\n".join(reasons)
 
-# --- Function to display analysis for a single stock ---
+# --- NEW: Function to get top signals for the sidebar ---
+@st.cache_data(ttl=3600)
+def calculate_quick_signals(df, ticker_col):
+    """Analyzes all stocks in the dataframe to find top buy/sell signals."""
+    tickers = df[ticker_col].dropna().unique()
+    all_signals = []
+    for ticker in tickers:
+        try:
+            history, _, _ = get_stock_data(ticker)
+            if not history.empty:
+                _, recommendation, _ = calculate_swing_trade_analysis(history)
+                all_signals.append({'Ticker': ticker, 'Signal': recommendation})
+        except Exception:
+            continue # Skip stocks with errors
+    
+    if not all_signals:
+        return pd.DataFrame(), pd.DataFrame()
+
+    signals_df = pd.DataFrame(all_signals)
+    buy_signals = signals_df[signals_df['Signal'].isin(['Strong Buy', 'Buy'])].head(3)
+    sell_signals = signals_df[signals_df['Signal'] == 'Sell / Avoid'].head(3)
+    
+    return buy_signals, sell_signals
+
 def display_stock_analysis(ticker):
+    """Function to display analysis for a single stock."""
     try:
         history, info, financials = get_stock_data(ticker)
         if history.empty:
@@ -189,11 +205,12 @@ EXCEL_FILE_PATH = "SELECTED STOCKS 22FEB2025.xlsx"
 TICKER_COLUMN_NAME = "NSE SYMBOL"
 INDUSTRY_COLUMN_NAME = "INDUSTRY"
 
-# --- Initialize session state for navigation ---
 if 'current_stock_index' not in st.session_state:
     st.session_state.current_stock_index = 0
 if 'ticker_list' not in st.session_state:
     st.session_state.ticker_list = []
+if 'quick_signals_calculated' not in st.session_state:
+    st.session_state.quick_signals_calculated = False
 
 if not os.path.exists(EXCEL_FILE_PATH):
     st.error(f"Error: The file '{EXCEL_FILE_PATH}' was not found.")
@@ -209,6 +226,27 @@ else:
                 df_filtered = df_full[df_full[INDUSTRY_COLUMN_NAME] == selected_industry] if selected_industry != "All Industries" else df_full
                 st.session_state.ticker_list = df_filtered[TICKER_COLUMN_NAME].dropna().unique().tolist()
                 st.session_state.current_stock_index = 0
+                st.session_state.quick_signals_calculated = True # Trigger the calculation
+                
+            # --- NEW: Display quick signals after analysis is run ---
+            if st.session_state.quick_signals_calculated:
+                with st.spinner("Calculating market snapshot..."):
+                    buy_signals, sell_signals = calculate_quick_signals(df_full, TICKER_COLUMN_NAME)
+                
+                st.subheader("Quick Signals Snapshot", divider='rainbow')
+                st.markdown("**Top 3 Buy Signals**")
+                if not buy_signals.empty:
+                    for _, row in buy_signals.iterrows():
+                        st.success(f"**{row['Ticker']}**: {row['Signal']}")
+                else:
+                    st.info("No strong buy signals found.")
+            
+                st.markdown("**Top 3 Sell Signals**")
+                if not sell_signals.empty:
+                    for _, row in sell_signals.iterrows():
+                        st.error(f"**{row['Ticker']}**: {row['Signal']}")
+                else:
+                    st.info("No strong sell signals found.")
 
         except Exception as e:
             st.error(f"Could not read the Excel file. Error: {e}")
@@ -217,20 +255,18 @@ else:
     if st.session_state.ticker_list:
         current_ticker = st.session_state.ticker_list[st.session_state.current_stock_index]
         
-        # --- Navigation Buttons ---
-        col1, col2, col3 = st.columns([1, 5, 1])
+        col1, col2, col3 = st.columns([1.5, 5, 1.5])
         with col1:
             if st.button("⬅️ Previous Stock", use_container_width=True, disabled=(st.session_state.current_stock_index == 0)):
                 st.session_state.current_stock_index -= 1
                 st.rerun()
         with col2:
-            st.write(f"Displaying **{st.session_state.current_stock_index + 1}** of **{len(st.session_state.ticker_list)}** stocks")
+            st.markdown(f"<p style='text-align: center; font-size: 1.1em;'>Displaying <b>{st.session_state.current_stock_index + 1}</b> of <b>{len(st.session_state.ticker_list)}</b> stocks</p>", unsafe_allow_html=True)
         with col3:
             if st.button("Next Stock ➡️", use_container_width=True, disabled=(st.session_state.current_stock_index >= len(st.session_state.ticker_list) - 1)):
                 st.session_state.current_stock_index += 1
                 st.rerun()
 
-        # Display the analysis for the current stock
         display_stock_analysis(current_ticker)
     else:
         st.info("Select an industry from the sidebar and click the 'Analyze' button to begin.")
