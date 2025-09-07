@@ -5,7 +5,7 @@ import numpy as np
 from ta.trend import SMAIndicator
 from ta.momentum import RSIIndicator
 import plotly.graph_objects as go
-import io
+import os
 
 # ======================================================================================
 # CONFIGURATION & HEADER
@@ -14,7 +14,7 @@ st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
 
 st.title("📈 Intrinsic Value & Technical Stock Analyzer")
 st.markdown("""
-This tool analyzes stocks from your Excel file to determine their intrinsic value based on Benjamin Graham's formula 
+This tool analyzes stocks from a local Excel file to determine their intrinsic value based on Benjamin Graham's formula 
 and evaluates their technical strength using moving averages and RSI.
 """)
 
@@ -116,22 +116,12 @@ def generate_signal(row):
 with st.sidebar:
     st.header("⚙️ Analysis Configuration")
     
-    uploaded_file = st.file_uploader("Upload your Excel file", type=["xlsx", "xls"])
-    
-    if uploaded_file:
-        try:
-            df_sample = pd.read_excel(uploaded_file, nrows=5)
-            st.markdown("Detected Columns:")
-            st.dataframe(df_sample.columns.to_frame().T, hide_index=True)
-            ticker_column = st.text_input(
-                "Enter the column name containing NSE Tickers:", 
-                value=df_sample.columns[0]
-            )
-        except Exception as e:
-            st.error(f"Could not read the Excel file. Error: {e}")
-            ticker_column = None
-    else:
-        ticker_column = None
+    # --- MODIFIED: Hardcoded local file path and ticker column name ---
+    EXCEL_FILE_PATH = "nse_tickers.xlsx"
+    TICKER_COLUMN_NAME = "Ticker"
+
+    st.info(f"Reading tickers from local file:\n`{EXCEL_FILE_PATH}`")
+    st.write(f"Expecting a column named: `{TICKER_COLUMN_NAME}`")
 
     bond_yield = st.number_input(
         "Current AAA Corporate Bond Yield (%)", 
@@ -139,7 +129,12 @@ with st.sidebar:
         help="This is 'Y' in Graham's formula. A higher yield leads to a more conservative (lower) intrinsic value."
     )
     
-    analyze_button = st.button("🚀 Run Analysis", disabled=(not uploaded_file or not ticker_column))
+    # --- MODIFIED: Button is disabled if the local file does not exist ---
+    file_exists = os.path.exists(EXCEL_FILE_PATH)
+    if not file_exists:
+        st.error(f"Error: The file '{EXCEL_FILE_PATH}' was not found in the app's root directory.")
+    
+    analyze_button = st.button("🚀 Run Analysis", disabled=(not file_exists))
 
 # ======================================================================================
 # MAIN APP LOGIC & DISPLAY
@@ -147,11 +142,12 @@ with st.sidebar:
 
 if analyze_button:
     try:
-        df = pd.read_excel(uploaded_file)
-        if ticker_column not in df.columns:
-            st.error(f"The column '{ticker_column}' was not found in the uploaded file. Please check the name.")
+        # --- MODIFIED: Reads from the local Excel file path ---
+        df = pd.read_excel(EXCEL_FILE_PATH)
+        if TICKER_COLUMN_NAME not in df.columns:
+            st.error(f"The column '{TICKER_COLUMN_NAME}' was not found in '{EXCEL_FILE_PATH}'. Please check the file.")
         else:
-            tickers = df[ticker_column].dropna().unique()
+            tickers = df[TICKER_COLUMN_NAME].dropna().unique()
             results = []
             
             progress_bar = st.progress(0)
@@ -252,4 +248,5 @@ if analyze_button:
         st.error(f"An error occurred during analysis: {e}")
 
 else:
-    st.info("Please upload an Excel file and click 'Run Analysis' to begin.")
+    st.info("Ensure `nse_tickers.xlsx` is in the same directory and click 'Run Analysis' to begin.")
+
