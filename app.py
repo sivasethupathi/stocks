@@ -397,7 +397,7 @@ else:
                     valid_indices = industry_signals[industry_signals['Order'] > 0].index
                     industry_signals.loc[valid_indices, 'Rank'] = range(1, len(valid_indices) + 1)
                     
-                    # Fix: Ensure Rank is integer then string
+                    # Fix: Ensure Rank is integer then string (non-decimal integer)
                     industry_signals['Rank'] = industry_signals['Rank'].fillna(0).astype(int)
                     industry_signals.loc[industry_signals['Rank'] == 0, 'Rank'] = '-'
                     industry_signals['Rank'] = industry_signals['Rank'].astype(str)
@@ -424,34 +424,17 @@ else:
                     st.caption(f"Showing {len(industry_signals)} stocks in this industry.")
 
                     # 5. Apply styling and display the DataFrame
-                    # Adding a unique key and selection mode for clickability
-                    selected_rows = st.dataframe(
+                    # Removed clickability and adjusted column config for sidebar visibility
+                    st.dataframe(
                         styled_df.style.applymap(color_signals, subset=['Recommendation']),
                         hide_index=True,
-                        # Added column_config to fix sidebar width issue and prevent horizontal scrolling
+                        use_container_width=True,
                         column_config={
                             "Rank": st.column_config.Column(width="small"),
                             "Stock": st.column_config.Column(width="medium"),
                             "Recommendation": st.column_config.Column(width="large"),
-                        },
-                        selection_mode='single-row',
-                        key=f'industry_list_df_{st.session_state.selected_industry}'
+                        }
                     )
-
-                    # 6. Check for clicks and update the main content (DEBUGGED LOGIC)
-                    if selected_rows:
-                        # Safely navigate the nested dictionary structure using .get()
-                        selection_data = selected_rows.get('selection', {})
-                        selected_rows_list = selection_data.get('rows', [])
-                        
-                        if selected_rows_list:
-                            selected_rank_index = selected_rows_list[0]
-                            
-                            # Check if the selection changed
-                            if selected_rank_index != st.session_state.current_stock_index:
-                                st.session_state.current_stock_index = selected_rank_index
-                                st.rerun()
-
                 else:
                     st.info(f"No valid signal data found for stocks in the {st.session_state.selected_industry} industry.")
 
