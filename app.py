@@ -22,7 +22,7 @@ st.markdown("Select an industry from your Excel file to get a consolidated analy
 
 # --- API KEY CONFIGURATION ---
 # IMPORTANT: Replace the placeholder below with your actual NewsAPI.org API Key
-NEWSAPI_KEY = "REPLACE_WITH_YOUR_NEWSAPI_KEY"
+NEWSAPI_KEY = "517d56d684f04f0bba8a65bcc478727c"
 
 # ======================================================================================
 # DATA FETCHING & CALCULATION FUNCTIONS
