@@ -214,11 +214,11 @@ def display_stock_analysis(ticker):
         
         # --- MODIFIED LOGIC FOR FY MOVE METRIC ---
         # Calculate year-to-date or FY move (using 2025-03-28 as the reference point for FY)
-        price_mar_28, date_mar_28 = get_price_on_date(daily_history, '2025-05-27') 
+        price_mar_28, date_mar_28 = get_price_on_date(daily_history, '2025-03-28') 
         move_fy_percent = None
         
         # Set a default delta text if the price is unavailable (most likely scenario for a future date)
-        fy_delta_text = f"FY Start Price (28-Mar-2025) Unavailable" 
+        fy_delta_text = f"FY Start Price Unavailable" 
         metric_value_display = "N/A"
         
         # Calculate the price movement and update the delta text
