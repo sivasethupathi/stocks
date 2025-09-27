@@ -428,18 +428,29 @@ else:
                     selected_rows = st.dataframe(
                         styled_df.style.applymap(color_signals, subset=['Recommendation']),
                         hide_index=True,
-                        use_container_width=True,
+                        # Added column_config to fix sidebar width issue and prevent horizontal scrolling
+                        column_config={
+                            "Rank": st.column_config.Column(width="small"),
+                            "Stock": st.column_config.Column(width="medium"),
+                            "Recommendation": st.column_config.Column(width="large"),
+                        },
                         selection_mode='single-row',
                         key=f'industry_list_df_{st.session_state.selected_industry}'
                     )
 
-                    # 6. Check for clicks and update the main content
-                    if selected_rows and selected_rows['selection']['rows']:
-                        selected_rank_index = selected_rows['selection']['rows'][0]
+                    # 6. Check for clicks and update the main content (DEBUGGED LOGIC)
+                    if selected_rows:
+                        # Safely navigate the nested dictionary structure using .get()
+                        selection_data = selected_rows.get('selection', {})
+                        selected_rows_list = selection_data.get('rows', [])
                         
-                        if selected_rank_index != st.session_state.current_stock_index:
-                            st.session_state.current_stock_index = selected_rank_index
-                            st.rerun()
+                        if selected_rows_list:
+                            selected_rank_index = selected_rows_list[0]
+                            
+                            # Check if the selection changed
+                            if selected_rank_index != st.session_state.current_stock_index:
+                                st.session_state.current_stock_index = selected_rank_index
+                                st.rerun()
 
                 else:
                     st.info(f"No valid signal data found for stocks in the {st.session_state.selected_industry} industry.")
