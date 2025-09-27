@@ -85,6 +85,49 @@ def scrape_screener_data(ticker):
         if name and value: data[name] = value
     return data, "Success"
 
+@st.cache_data(ttl=3600)
+def scrape_balance_sheet_data(ticker):
+    """
+    Scrapes the Annual Consolidated Balance Sheet table from screener.in.
+    This logic is extracted from the document export functionality for UI display.
+    """
+    url = f"https://www.screener.in/company/{ticker}/consolidated/"
+    selector = '#balance-sheet'
+    try:
+        response = requests.get(url, headers=HEADERS, timeout=10)
+        response.raise_for_status()
+    except requests.RequestException:
+        return pd.DataFrame(), "Failed to load page"
+    
+    soup = BeautifulSoup(response.content, 'html.parser')
+    section_tag = soup.select_one(selector)
+    
+    if not section_tag: 
+        return pd.DataFrame(), "Balance Sheet table not found"
+        
+    try:
+        df_list = pd.read_html(str(section_tag))
+        if df_list:
+            df = df_list[0].fillna('')
+            
+            # Set the first column (Metric Names) as the index
+            df = df.set_index(df.columns[0])
+            df.index.name = df.columns.name if df.columns.name else 'Metric'
+            
+            # Clean up multi-index columns if they exist
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = [' '.join(map(str, col)).strip() for col in df.columns.values]
+            
+            # Clean column names (strip leading/trailing whitespace)
+            df.columns = df.columns.str.strip()
+            
+            return df, "Success"
+    except Exception as e:
+        return pd.DataFrame(), f"Failed to parse table: {e}"
+    
+    return pd.DataFrame(), "Table not found"
+
+
 def calculate_graham_intrinsic_value(info, financials, bond_yield=7.5):
     """Calculates the intrinsic value of a stock using Benjamin Graham's formula."""
     try:
@@ -492,6 +535,19 @@ def display_stock_analysis(ticker):
                 use_container_width=True
             )
         # --- End Export Section ---
+        
+        # --- NEW: Balance Sheet Display Section ---
+        st.divider()
+        st.subheader("Annual Consolidated Balance Sheet", divider='gray')
+        
+        df_balance_sheet, bs_status = scrape_balance_sheet_data(ticker)
+        
+        if bs_status == "Success" and not df_balance_sheet.empty:
+            # Display the DataFrame, Transposed (Years as columns, Metrics as rows)
+            st.dataframe(df_balance_sheet, use_container_width=True)
+        else:
+            st.warning(f"Could not load Balance Sheet data ({bs_status}).")
+        # --- End Balance Sheet Display ---
 
 
     except Exception as e:
