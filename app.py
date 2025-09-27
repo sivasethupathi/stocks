@@ -22,7 +22,7 @@ st.markdown("Select an industry from your Excel file to get a consolidated analy
 
 # --- API KEY CONFIGURATION ---
 # IMPORTANT: Replace the placeholder below with your actual NewsAPI.org API Key
-NEWSAPI_KEY = "517d56d684f04f0bba8a65bcc478727c"
+NEWSAPI_KEY = "REPLACE_WITH_YOUR_NEWSAPI_KEY"
 
 # ======================================================================================
 # DATA FETCHING & CALCULATION FUNCTIONS
@@ -312,7 +312,7 @@ def display_stock_analysis(ticker):
         if buy_price is not None:
             variation = current_price - buy_price
             sign = "+" if variation >= 0 else ""
-            price_variation_text = f", [{sign}{variation:,.2f} Rs]"
+            price_variation_text = f", [{sign}{variation:,.2f} Rs from Recommended Price]"
             
         # FIX: Update the header with the calculated price variation
         st.header(f"Analysis for: {info.get('shortName', ticker)} ({ticker}){price_variation_text}", divider='rainbow')
@@ -405,6 +405,7 @@ def display_stock_analysis(ticker):
 EXCEL_FILE_PATH = "SELECTED STOCKS 22FEB2025.xlsx"
 TICKER_COLUMN_NAME = "NSE SYMBOL"
 INDUSTRY_COLUMN_NAME = "INDUSTRY"
+COMPANY_COLUMN_NAME = "COMPANY" # Assuming a 'COMPANY' column exists in your Excel
 
 # Initialize Session State Variables
 if 'current_stock_index' not in st.session_state: st.session_state.current_stock_index = 0
@@ -535,7 +536,6 @@ else:
                     st.caption(f"Showing {len(industry_signals)} stocks in this industry.")
 
                     # 5. Apply styling and display the DataFrame
-                    # --- REMOVED column_config to ensure all columns auto-size and are fully visible in the sidebar ---
                     st.dataframe(
                         styled_df.style.applymap(color_signals, subset=['Recommendation']),
                         hide_index=True,
@@ -555,22 +555,65 @@ else:
         )
 
 
+    # --- NEW: TOP RIGHT SEARCH BAR LOGIC ---
+    # Create the combined list for search suggestions
+    all_tickers_names = []
+    # Ensure COMPANY_COLUMN_NAME is defined if using it, assuming it's available
+    df_search_mapping = df_full[[TICKER_COLUMN_NAME, COMPANY_COLUMN_NAME]].dropna()
+    for _, row in df_search_mapping.iterrows():
+        # Format: "COMPANY NAME (TICKER)" for easy selection and ticker extraction
+        all_tickers_names.append(f"{row[COMPANY_COLUMN_NAME]} ({row[TICKER_COLUMN_NAME]})")
+    
+    # We place the search box in two columns to give it a "top right" feel.
+    search_main_col, search_box_col = st.columns([1, 4])
+    
+    with search_box_col:
+        selected_search = st.selectbox(
+            "Quick Stock Search:",
+            options=[''] + sorted(all_tickers_names),
+            index=0,
+            key='quick_search_input',
+            label_visibility="collapsed",
+            placeholder="Search Company Name or Ticker..."
+        )
+    
+    # Handle search selection immediately
+    if selected_search:
+        # Extract the Ticker from the selected string
+        match = re.search(r'\((.*?)\)', selected_search)
+        if match:
+            search_ticker = match.group(1).strip()
+            
+            # Check if we need to update the session state
+            if not st.session_state.ticker_list or st.session_state.ticker_list[st.session_state.current_stock_index] != search_ticker:
+                # Overwrite the ticker list and index to display the search result
+                st.session_state.ticker_list = [search_ticker]
+                st.session_state.current_stock_index = 0
+                st.session_state.selected_industry = "Search Result" # Indicate a single search result is active
+                st.rerun()
+
     # --- MAIN CONTENT LAYOUT ---
     if st.session_state.ticker_list:
         current_ticker = st.session_state.ticker_list[st.session_state.current_stock_index]
         
-        # Navigation Buttons
-        col1, col2, col3 = st.columns([1.5, 5, 1.5])
-        with col1:
-            if st.button("⬅️ Previous Stock", use_container_width=True, disabled=(st.session_state.current_stock_index == 0)):
-                st.session_state.current_stock_index -= 1; st.rerun()
-        with col2:
-            st.markdown(f"<p style='text-align: center; font-size: 1.1em;'>Displaying <b>{st.session_state.current_stock_index + 1}</b> of <b>{len(st.session_state.ticker_list)}</b> stocks in <b>{st.session_state.selected_industry}</b></p>", unsafe_allow_html=True)
-        with col3:
-            if st.button("Next Stock ➡️", use_container_width=True, disabled=(st.session_state.current_stock_index >= len(st.session_state.ticker_list) - 1)):
-                st.session_state.current_stock_index += 1; st.rerun()
+        # Navigation Buttons logic
+        is_single_stock_result = len(st.session_state.ticker_list) == 1 and st.session_state.selected_industry == "Search Result"
+        
+        # Only show navigation buttons if it's NOT a single search result
+        if not is_single_stock_result:
+            col1, col2, col3 = st.columns([1.5, 5, 1.5])
+            with col1:
+                if st.button("⬅️ Previous Stock", use_container_width=True, disabled=(st.session_state.current_stock_index == 0)):
+                    st.session_state.current_stock_index -= 1; st.rerun()
+            with col2:
+                st.markdown(f"<p style='text-align: center; font-size: 1.1em;'>Displaying <b>{st.session_state.current_stock_index + 1}</b> of <b>{len(st.session_state.ticker_list)}</b> stocks in <b>{st.session_state.selected_industry}</b></p>", unsafe_allow_html=True)
+            with col3:
+                if st.button("Next Stock ➡️", use_container_width=True, disabled=(st.session_state.current_stock_index >= len(st.session_state.ticker_list) - 1)):
+                    st.session_state.current_stock_index += 1; st.rerun()
+        else:
+             st.markdown(f"<p style='text-align: center; font-size: 1.1em;'>Displaying Search Result: <b>{current_ticker}</b></p>", unsafe_allow_html=True)
 
         # Display the detailed analysis
         display_stock_analysis(current_ticker)
     else:
-        st.info("Select an industry from the sidebar and click the 'Analyze Selection' button to view the stock list and detailed analysis.")
+        st.info("Select an industry from the sidebar and click the 'Analyze Selection' button to view the stock list and detailed analysis, or use the Quick Stock Search above.")
