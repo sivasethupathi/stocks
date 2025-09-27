@@ -7,13 +7,14 @@ import os
 import requests
 from bs4 import BeautifulSoup
 import re
-import json # Added for NSE API processing
-import time # FIX: Added to resolve NameError for time.sleep()
-from typing import Dict, Any, List # Added for typing in helper functions
-from io import BytesIO # For document download
-from docx import Document # Added for Word document generation
+import json
+import time 
+from typing import Dict, Any, List 
+from io import BytesIO 
+from docx import Document 
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Inches # Added for document layout
 
 from ta.trend import MACD
 from ta.momentum import RSIIndicator
@@ -28,17 +29,15 @@ st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
 st.title("Stock Analyzer | NS   T R A D E R")
 st.markdown("Select an industry from your Excel file to get a consolidated analysis, including financial ratios from **Screener.in** and a detailed **Swing Trading** recommendation with Fibonacci levels.")
 
-# --- NSE Configuration (Used for data export) ---
-# NOTE: The ISIN here is hardcoded to INFY (INE009A01021) as the Streamlit app does not track ISINs.
-# The export will only work correctly for INFY's ownership data unless you map ISINs in your Excel file.
-NSE_BASE_URL = "https://www.nseindia.com/"
+# --- Web Scraping Configuration ---
+NSE_BASE_URL = "https://www.nseindia.com/" # Kept for consistency, not used in export now.
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/555.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/555.36',
     'Accept-Language': 'en-US,en;q=0.9',
     'Accept-Encoding': 'gzip, deflate, br',
 }
-# --- End NSE Configuration ---
+# --- End Web Scraping Configuration ---
 
 # ======================================================================================
 # DATA FETCHING & CALCULATION FUNCTIONS (Dashboard UI)
@@ -68,7 +67,7 @@ def get_price_on_date(daily_history, target_date_str):
 
 @st.cache_data(ttl=3600)
 def scrape_screener_data(ticker):
-    """Scrapes key financial data for a given ticker from screener.in."""
+    """Scrapes key financial data for a given ticker from screener.in (used for UI ratios)."""
     url = f"https://www.screener.in/company/{ticker}/consolidated/"
     try:
         response = requests.get(url, headers=HEADERS, timeout=10)
@@ -103,7 +102,6 @@ def calculate_graham_intrinsic_value(info, financials, bond_yield=7.5):
 
 # --- FIBONACCI RETRACEMENT ANALYSIS ---
 def calculate_fibonacci_levels(history):
-    # ... (function body remains the same as previous code)
     lookback_period = history.tail(52) # Look at the last 52 weeks (1 year)
     high_price = lookback_period['High'].max()
     low_price = lookback_period['Low'].min()
@@ -142,7 +140,6 @@ def calculate_fibonacci_levels(history):
 
 
 def calculate_swing_trade_analysis(history):
-    # ... (function body remains the same as previous code)
     if len(history) < 52:
         return None, "Insufficient Data", "Not enough weekly data for full analysis."
 
@@ -189,7 +186,6 @@ def calculate_swing_trade_analysis(history):
 
 @st.cache_data(ttl=3600)
 def calculate_quick_signals(df, ticker_col):
-    # ... (function body remains the same as previous code)
     tickers = df[ticker_col].dropna().unique()
     all_signals = []
     for ticker in tickers[:50]: 
@@ -206,180 +202,81 @@ def calculate_quick_signals(df, ticker_col):
     return buy_signals, sell_signals
 
 # ======================================================================================
-# WORD DOCUMENT GENERATION MODULE (Integrated from stock_report_generator.py)
+# WORD DOCUMENT GENERATION MODULE: NEW SCREENER-BASED CRAWLER
 # ======================================================================================
 
-def create_nse_session() -> requests.Session:
-    """Creates a session and fetches initial cookies needed for NSE API access."""
-    session = requests.Session()
-    try:
-        session.get(NSE_BASE_URL, headers=HEADERS, timeout=10)
-        return session
-    except requests.RequestException:
-        return None
-
-def fetch_nse_quote_data_export(session: requests.Session, ticker: str) -> Dict[str, Any]:
+def scrape_all_screener_data(ticker: str) -> Dict[str, Any]:
     """
-    Fetches the main stock quote data from the NSE API, including all detailed trade metrics.
+    Scrapes all structured data tables from the Screener page for a given ticker.
+    Returns a dictionary where keys are section titles and values are DataFrames or dicts.
     """
-    data = {}
-    NSE_QUOTE_API = f"https://www.nseindia.com/api/quote-equity?symbol={ticker}"
-    try:
-        response = session.get(NSE_QUOTE_API, headers=HEADERS, timeout=10)
-        response.raise_for_status()
-        quote_data = response.json()
-        
-        # --- Extract metric groups ---
-        info = quote_data.get('info', {})
-        metadata = quote_data.get('metadata', {})
-        security_info = quote_data.get('securityInfo', {})
-        price_band = quote_data.get('priceBand', {})
-        p_data = quote_data.get('preOpenMarket', {}).get('finalPrice', {})
-        
-        # --- Calculations and Conversions ---
-        volume = quote_data.get('totalTradedVolume', 0)
-        value = quote_data.get('totalTradedValue', 0)
-        delivery_qty = security_info.get('deliveryQuantity', 0)
-        
-        deliverable_percentage = (delivery_qty / volume * 100) if volume > 0 else 0
-        
-        # Use day high/low for indicative daily volatility (as a percentage of day average)
-        day_high = quote_data.get('dayHigh', 0)
-        day_low = quote_data.get('dayLow', 0)
-        daily_volatility_percent = (day_high - day_low) / day_low * 100 if day_low > 0 else 0
-        
-        # --- Final Data Structure for Export ---
-        data['Latest Price Data'] = {
-            'Company Name': info.get('companyName', 'N/A'),
-            'Basic Industry': info.get('industry', 'N/A'),
-            'Latest Trade Date': metadata.get('lastUpdateTime', 'N/A'),
-            'Total Capital Market (₹ Crore)': f"{round(info.get('marketCap', 0) / 10000000, 2):,}",
-            
-            # Trade Volume/Value
-            'Total Traded Volume (Lakhs)': f"{round(volume / 100000, 2):,}",
-            'Total Traded Value (₹ Crores)': f"{round(value / 10000000, 2):,}",
-            'Delivery Percentage': f"{deliverable_percentage:.2f}%",
-
-            # Price Metrics
-            'Face Value (₹)': security_info.get('faceValue', 'N/A'),
-            'Date of Listing': security_info.get('listingDate', 'N/A'),
-            
-            '52 Week High (₹)': metadata.get('weekHigh', 'N/A'),
-            '52 Week High Date': metadata.get('weekHighDate', 'N/A'),
-            '52 Week Low (₹)': metadata.get('weekLow', 'N/A'),
-            '52 Week Low Date': metadata.get('weekLowDate', 'N/A'),
-            
-            'Upper Circuit Band (₹)': price_band.get('max', 'N/A'),
-            'Lower Circuit Band (₹)': price_band.get('min', 'N/A'),
-            
-            # Volatility & P/E Ratios
-            'Daily Volatility (Indicative)': f"{daily_volatility_percent:.2f}%",
-            'Annualised Volatility': 'N/A (API Field Missing)', # Not directly available in quote API
-            'Adjusted P/E (TTM)': p_data.get('pE', 'N/A'),
-            'Symbol P/E': metadata.get('symbolPE', 'N/A'),
-        }
-    except Exception:
-        # Catch any errors during API call or processing
-        pass
-    return data
-
-def fetch_nse_financial_data_export(session: requests.Session, ticker: str) -> pd.DataFrame:
-    """Fetches quarterly financial results for export."""
-    df = pd.DataFrame()
-    NSE_FINANCIAL_API = f"https://www.nseindia.com/api/corporates-financial-results?symbol={ticker}&index=equities&period=Quarterly"
-    time.sleep(1) 
-    
-    try:
-        response = session.get(NSE_FINANCIAL_API, headers=HEADERS, timeout=10)
-        response.raise_for_status()
-        financial_data = response.json()
-        
-        if 'data' in financial_data:
-            results = []
-            for item in financial_data['data']:
-                income = item.get('totalIncome', 0)
-                expenses = item.get('totalExpenses', 0)
-                tax = item.get('taxExpense', 0)
-                
-                results.append({
-                    'Quarter Ended': item.get('period'),
-                    'Total Income (Cr)': round(income / 100, 2), 
-                    'Total Expenses (Cr)': round(expenses / 100, 2), 
-                    'Total Tax Expense (Cr)': round(tax / 100, 2)
-                })
-            
-            df = pd.DataFrame(results).head(4)
-            if not df.empty:
-                df = df.set_index('Quarter Ended').T
-            
-    except Exception:
-        pass
-    return df
-
-def fetch_nse_shareholding_data_export(session: requests.Session, ticker: str) -> pd.DataFrame:
-    """Fetches the latest quarterly FII/DII shareholding pattern for export."""
-    df = pd.DataFrame()
-    NSE_SHAREHOLDING_API = f"https://www.nseindia.com/api/corporates-shareholding?symbol={ticker}"
-    time.sleep(1)
-    
-    try:
-        response = session.get(NSE_SHAREHOLDING_API, headers=HEADERS, timeout=10)
-        response.raise_for_status()
-        shareholding_data = response.json()
-        
-        if 'data' in shareholding_data:
-            results = []
-            for item in shareholding_data['data']:
-                category = item.get('category', 'N/A')
-                percent = item.get('value', '0.0')
-                
-                if 'FII' in category.upper() or 'DII' in category.upper() or 'MUTUAL FUND' in category.upper():
-                    results.append({'Category': category, 'Percentage (%)': float(percent)})
-            
-            latest_date = shareholding_data.get('latest_date', 'N/A')
-            
-            if results:
-                df = pd.DataFrame(results)
-                df_agg = df.groupby('Category')['Percentage (%)'].sum().reset_index()
-                df_agg['Percentage (%)'] = df_agg['Percentage (%)'].apply(lambda x: f"{x:.2f}%")
-                df_agg.columns = ['Category', f'Latest Percentage ({latest_date})']
-                df = df_agg.set_index('Category').T
-        
-    except Exception:
-        pass
-    return df
-
-def fetch_cogencis_ownership_data_export(isin: str, ticker: str) -> Dict[str, pd.DataFrame]:
-    """Scrapes all tables from the Cogencis ownership data page for export."""
+    url = f"https://www.screener.in/company/{ticker}/consolidated/"
     scraped_data = {}
-    # NOTE: The ISIN here is hardcoded to INFY (INE009A01021) 
-    # and the ticker is dynamically inserted into the URL.
-    COGENCIS_OWNERSHIP_URL = f"https://iinvest.cogencis.com/{isin}/symbol/ns/{ticker}/Infosys%20Limited?tab=ownership-data&type=capital-history"
-    time.sleep(2)
+    time.sleep(1) # Be polite when scraping
     
     try:
-        response = requests.get(COGENCIS_OWNERSHIP_URL, headers=HEADERS, timeout=15)
+        response = requests.get(url, headers=HEADERS, timeout=15)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
-        tables = soup.find_all('table')
         
-        for i, table in enumerate(tables):
-            try:
-                df_list = pd.read_html(str(table))
-                if df_list:
-                    df = df_list[0]
-                    title_tag = table.find_previous(['h3', 'h4', 'h5', 'p'], text=True)
-                    table_title = title_tag.text.strip() if title_tag and len(title_tag.text.strip()) > 5 else f"Ownership/Capital Table {i+1}"
-                    
-                    if not df.empty:
+        # --- 1. Top Ratios/Key Metrics ---
+        # Note: This list also contains company name and basic industry
+        key_metrics = {}
+        ratio_list = soup.select_one('#top-ratios')
+        if ratio_list:
+            for li in ratio_list.find_all('li'):
+                name_tag = li.select_one('.name')
+                value_tag = li.select_one('.nowrap.value .number')
+                
+                if name_tag and value_tag:
+                    name = name_tag.get_text(strip=True)
+                    value = value_tag.get_text(strip=True)
+                    key_metrics[name] = value
+        
+        # Get Company Name and Industry
+        company_name = soup.select_one('.heading h1').get_text(strip=True) if soup.select_one('.heading h1') else ticker
+        industry = soup.select_one('.company-industry a').get_text(strip=True) if soup.select_one('.company-industry a') else 'N/A'
+        
+        scraped_data['0. Company Summary'] = {
+            'Name': company_name,
+            'Ticker': ticker,
+            'Industry': industry,
+            'Latest Metrics': pd.DataFrame(key_metrics.items(), columns=['Metric', 'Value']).set_index('Metric').T
+        }
+        
+        # --- 2. HTML Tables (Quarterly, P&L, BS, CF, Shareholding) ---
+        table_sections = [
+            ('1. Quarterly Results', '#quarterly', 'Quarterly'),
+            ('2. Profit & Loss', '#profit-loss', 'Annual'),
+            ('3. Balance Sheet', '#balance-sheet', 'Annual'),
+            ('4. Cash Flow', '#cash-flow', 'Annual'),
+            ('5. Shareholding Pattern', '#shareholding', 'Latest')
+        ]
+        
+        for title, selector, transpose_mode in table_sections:
+            section_tag = soup.select_one(selector)
+            if section_tag:
+                try:
+                    df_list = pd.read_html(str(section_tag))
+                    if df_list:
+                        df = df_list[0].fillna('')
+                        # Transpose logic for P&L, BS, CF, and Shareholding (Rows as metrics, Columns as dates)
+                        if transpose_mode in ['Annual', 'Quarterly']:
+                            df = df.set_index(df.columns[0])
+                            df.index.name = df.columns.name
+                        
+                        # Fix multi-index columns for Shareholding if present
                         if isinstance(df.columns, pd.MultiIndex):
-                            df.columns = [' '.join(col).strip() for col in df.columns.values]
-                        scraped_data[table_title] = df.fillna('')
-            except Exception:
-                continue
-
+                            df.columns = [' '.join(map(str, col)).strip() for col in df.columns.values]
+                        
+                        scraped_data[title] = df
+                except Exception as e:
+                    scraped_data[title] = pd.DataFrame([{'Error': f'Failed to parse table: {e}'}])
+        
+    except requests.RequestException as e:
+        scraped_data['Error'] = f"Failed to access Screener.in: {e}"
     except Exception as e:
-        scraped_data['Error'] = f"Failed to fetch Cogencis data: {e}"
+        scraped_data['Error'] = f"An unexpected error occurred during scraping: {e}"
         
     return scraped_data
 
@@ -388,15 +285,22 @@ def add_dataframe_to_word(document, df: pd.DataFrame, table_style: str = 'Table 
     document.add_paragraph()
     has_index = df.index.name is not None or not pd.RangeIndex(start=0, stop=len(df.index)).equals(df.index)
 
+    # Ensure index column is present if we are treating the index as part of the data
     rows, cols = df.shape
     num_cols = cols + (1 if has_index else 0)
-    table = document.add_table(rows + 1, num_cols)
+    
+    # Calculate the number of header rows
+    num_header_rows = 1
+
+    table = document.add_table(rows + num_header_rows, num_cols)
     table.style = table_style
     
+    # --- Write Header Row ---
     hdr_cells = table.rows[0].cells
     current_col = 0
+    
     if has_index:
-        hdr_cells[0].text = str(df.index.name or 'Index')
+        hdr_cells[0].text = str(df.index.name or 'Metric')
         current_col = 1
         
     for j, col_name in enumerate(df.columns):
@@ -404,8 +308,9 @@ def add_dataframe_to_word(document, df: pd.DataFrame, table_style: str = 'Table 
         hdr_cells[current_col + j].paragraphs[0].runs[0].font.bold = True
         hdr_cells[current_col + j].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
     
+    # --- Write Data Rows ---
     for i, (index_name, row) in enumerate(df.iterrows()):
-        row_cells = table.rows[i + 1].cells
+        row_cells = table.rows[i + num_header_rows].cells
         current_col = 0
         
         if has_index:
@@ -413,32 +318,31 @@ def add_dataframe_to_word(document, df: pd.DataFrame, table_style: str = 'Table 
             current_col = 1
             
         for j, value in enumerate(row):
-            text_value = str(value)
+            text_value = str(value).replace('\u2010', '-') # Replace hyphen-like character
+            
+            # Formatting (e.g., thousands separator)
             try:
-                if text_value.replace(',', '').replace('.', '', 1).isdigit() and len(text_value.replace('.', '')) > 4:
-                    text_value = f"{float(text_value.replace(',', '')):,}"
+                # Attempt to format only numeric values that are not percentages (which contain %)
+                if text_value.replace(',', '').replace('.', '', 1).isdigit() and '%' not in text_value:
+                    float_value = float(text_value.replace(',', ''))
+                    # Format as comma-separated number
+                    text_value = f"{float_value:,.2f}" 
             except:
                 pass
 
             row_cells[current_col + j].text = text_value
+            
+            # Align numeric columns to the right
             if any(char.isdigit() for char in text_value) and not any(char.isalpha() for char in text_value):
                  row_cells[current_col + j].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
             else:
                  row_cells[current_col + j].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.LEFT
 
-def generate_word_document_bytes(ticker: str, isin: str = "INE009A01021") -> BytesIO:
-    """Fetches all data, generates the Word document, and returns it as a BytesIO object."""
-    nse_session = create_nse_session()
+def generate_word_document_bytes(ticker: str, isin: str = "") -> BytesIO:
+    """Fetches all Screener data, generates the Word document, and returns it as a BytesIO object."""
     
-    if not nse_session:
-        # Return an empty buffer if session fails
-        return BytesIO(b"")
-
-    # Fetch Data
-    quote_data = fetch_nse_quote_data_export(nse_session, ticker)
-    financial_data = fetch_nse_financial_data_export(nse_session, ticker)
-    shareholding_data = fetch_nse_shareholding_data_export(nse_session, ticker)
-    ownership_data = fetch_cogencis_ownership_data_export(isin, ticker)
+    # Data is fetched entirely from Screener now
+    scraped_data = scrape_all_screener_data(ticker)
 
     document = Document()
     
@@ -448,88 +352,49 @@ def generate_word_document_bytes(ticker: str, isin: str = "INE009A01021") -> Byt
     font.name = 'Calibri'
     font.size = Pt(11)
 
-    # Main Title
-    document.add_heading(f"Comprehensive Stock Analysis Report: {ticker}", 0)
-    document.add_paragraph(f"Report Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    # --- Main Title ---
+    company_name = scraped_data.get('0. Company Summary', {}).get('Name', ticker)
+    document.add_heading(f"Comprehensive Stock Analysis Report: {company_name} ({ticker})", 0)
+    document.add_paragraph(f"Source: Screener.in | Report Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     document.add_paragraph("---")
+    
+    if 'Error' in scraped_data:
+        document.add_paragraph(f"FATAL ERROR: Could not generate report due to scraping failure: {scraped_data['Error']}")
+        doc_io = BytesIO()
+        document.save(doc_io)
+        doc_io.seek(0)
+        return doc_io
 
-    # --- Section 1: Trade Information and Price Metrics (NSE) ---
-    document.add_heading(f"1. Trade Information and Price Metrics (NSE)", level=1)
-    if 'Latest Price Data' in quote_data:
-        data = quote_data['Latest Price Data']
-        
-        # Structure the trade data into a key-value DataFrame for clean presentation
-        trade_info_list = [
-            ("Company Name", data.get('Company Name', 'N/A')),
-            ("Basic Industry", data.get('Basic Industry', 'N/A')),
-            ("Last Updated", data.get('Latest Trade Date', 'N/A')),
-            ("", "---"), 
-            ("Total Capital Market", f"₹{data.get('Total Capital Market (₹ Crore)', 'N/A')} Crore"),
-            ("Date of Listing", data.get('Date of Listing', 'N/A')),
-            ("", "---"), 
-            ("Total Traded Volume", f"{data.get('Total Traded Volume (Lakhs)', 'N/A')} Lakhs"),
-            ("Total Traded Value", f"₹{data.get('Total Traded Value (₹ Crores)', 'N/A')} Crores"),
-            ("% of Deliverable / Traded Qty", data.get('Delivery Percentage', 'N/A')),
-            ("", "---"),
-            ("Adjusted P/E (TTM)", data.get('Adjusted P/E (TTM)', 'N/A')),
-            ("Symbol P/E", data.get('Symbol P/E', 'N/A')),
-            ("Face Value", f"₹{data.get('Face Value (₹)', 'N/A')}"),
-            ("", "---"),
-            ("52 Week High Amount", f"₹{data.get('52 Week High (₹)', 'N/A')}"),
-            ("52 Week High Date", data.get('52 Week High Date', 'N/A')),
-            ("52 Week Low Amount", f"₹{data.get('52 Week Low (₹)', 'N/A')}"),
-            ("52 Week Low Date", data.get('52 Week Low Date', 'N/A')),
-            ("", "---"),
-            ("Upper Circuit Band", f"₹{data.get('Upper Circuit Band (₹)', 'N/A')}"),
-            ("Lower Circuit Band", f"₹{data.get('Lower Circuit Band (₹)', 'N/A')}"),
-            ("Daily Volatility (Indicative)", data.get('Daily Volatility (Indicative)', 'N/A')),
-            ("Annualised Volatility", data.get('Annualised Volatility', 'N/A')),
-        ]
-        
-        df_trade_info = pd.DataFrame(trade_info_list, columns=['Metric', 'Value'])
-        
-        # Prepare for Word table (transpose to vertical list)
-        df_trade_info_filtered = df_trade_info[df_trade_info['Metric'] != ''].set_index('Metric').T
-
-        # Add the detailed table
-        add_dataframe_to_word(document, df_trade_info_filtered, table_style='Table Grid')
-
-    else:
-        document.add_paragraph("Trade information could not be retrieved from NSE.")
+    # --- Process and Add Sections to Document ---
+    
+    # 1. Company Summary (Name, Ticker, Industry, Latest Metrics)
+    summary = scraped_data.pop('0. Company Summary', {})
+    document.add_heading("1. Company Overview and Key Ratios", level=1)
+    
+    document.add_paragraph(f"Industry: {summary.get('Industry', 'N/A')}")
+    document.add_paragraph(f"Key Financial Ratios (Latest Trailing Twelve Months/Yearly Data):")
+    
+    # Add the metrics table (transposed)
+    if 'Latest Metrics' in summary and not summary['Latest Metrics'].empty:
+        add_dataframe_to_word(document, summary['Latest Metrics'].T.reset_index().rename(columns={'index': 'Metric'}), table_style='Light List Accent 1')
     
     document.add_paragraph("---")
 
-    # --- Section 2: Quarterly Financial Results Comparison (NSE) ---
-    document.add_heading("2. Quarterly Financial Results Comparison (₹ Crores)", level=1)
-    if not financial_data.empty:
-        add_dataframe_to_word(document, financial_data, table_style='Light Grid Accent 2')
-    else:
-        document.add_paragraph("Quarterly financial comparison data could not be retrieved from NSE.")
-
-    document.add_paragraph("---")
-
-    # --- Section 3: FII/DII Shareholding Pattern (NSE) ---
-    document.add_heading("3. Institutional Shareholding Pattern (NSE)", level=1)
-    if not shareholding_data.empty:
-        add_dataframe_to_word(document, shareholding_data, table_style='Grid Table 4 Accent 1')
-        document.add_paragraph("Data represents the latest quarterly percentage breakdown reported by the company.")
-    else:
-        document.add_paragraph("Quarterly shareholding data (FII/DII breakdown) could not be retrieved from NSE.")
+    # 2. Financial Tables (Quarterly, P&L, BS, CF, Shareholding)
     
-    document.add_paragraph("---")
+    section_index = 2
+    for title_key, df in scraped_data.items():
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            document.add_heading(f"{section_index}. {title_key}", level=1)
+            
+            # For shareholding, ensure index is named correctly if applicable
+            if 'Shareholding' in title_key:
+                 df.index.name = 'Investor Category'
 
-    # --- Section 4: Cogencis Ownership Data ---
-    document.add_heading(f"4. Ownership and Capital History (Source: Cogencis)", level=1)
+            add_dataframe_to_word(document, df, table_style='Table Grid')
+            section_index += 1
+            document.add_paragraph("---")
 
-    if 'Error' in ownership_data:
-        document.add_paragraph(f"Error scraping Cogencis data: {ownership_data['Error']}")
-    elif ownership_data:
-        for title, df in ownership_data.items():
-            document.add_heading(f"4.{list(ownership_data.keys()).index(title) + 1}: {title}", level=2)
-            add_dataframe_to_word(document, df, table_style='List Table 4 Accent 3')
-    else:
-        document.add_paragraph("No ownership or capital history tables were successfully scraped from Cogencis.")
-        
     # Save document to a BytesIO stream
     doc_io = BytesIO()
     document.save(doc_io)
@@ -613,13 +478,15 @@ def display_stock_analysis(ticker):
         
         export_col, _ = st.columns([1.5, 5.5])
         with export_col:
-            # Generate the document bytes dynamically
-            doc_bytes = generate_word_document_bytes(ticker)
+            with st.spinner(f"Preparing comprehensive report for {ticker} from Screener.in..."):
+                # Generate the document bytes dynamically
+                # NOTE: ISIN is no longer necessary as the Cogencis URL is removed.
+                doc_bytes = generate_word_document_bytes(ticker)
             
             st.download_button(
                 label="⬇️ Export Full Report (DOCX)",
                 data=doc_bytes,
-                file_name=f"{ticker}_Full_Report.docx",
+                file_name=f"{ticker}_Screener_Report.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 type="primary",
                 use_container_width=True
