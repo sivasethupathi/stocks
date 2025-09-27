@@ -8,6 +8,7 @@ import requests
 from bs4 import BeautifulSoup
 import re
 import json # Added for NSE API processing
+import time # FIX: Added to resolve NameError for time.sleep()
 from typing import Dict, Any, List # Added for typing in helper functions
 from io import BytesIO # For document download
 from docx import Document # Added for Word document generation
@@ -307,6 +308,8 @@ def fetch_nse_shareholding_data_export(session: requests.Session, ticker: str) -
 def fetch_cogencis_ownership_data_export(isin: str, ticker: str) -> Dict[str, pd.DataFrame]:
     """Scrapes all tables from the Cogencis ownership data page for export."""
     scraped_data = {}
+    # NOTE: The ISIN here is hardcoded to INFY (INE009A01021) 
+    # and the ticker is dynamically inserted into the URL.
     COGENCIS_OWNERSHIP_URL = f"https://iinvest.cogencis.com/{isin}/symbol/ns/{ticker}/Infosys%20Limited?tab=ownership-data&type=capital-history"
     time.sleep(2)
     
