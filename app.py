@@ -218,7 +218,7 @@ def display_stock_analysis(ticker):
         move_fy_percent = None
         
         # Set a default delta text if the price is unavailable (most likely scenario for a future date)
-        fy_delta_text = f"FY Start Price Unavailable" 
+        fy_delta_text = f"FY Start Price (28-Mar-2025) Unavailable" 
         metric_value_display = "N/A"
         
         # Calculate the price movement and update the delta text
@@ -366,7 +366,7 @@ else:
                     for _, row in sell_signals.iterrows(): st.error(f"**{row['Ticker']}**: {row['Signal']}")
                 else: st.info("No strong sell signals found.")
                 
-            # --- DISPLAY: SPECIFIC INDUSTRY (Full List) ---
+            # --- DISPLAY: SPECIFIC INDUSTRY (Full List with Rank and Styling) ---
             else:
                 industry_tickers = df_full[df_full[INDUSTRY_COLUMN_NAME] == st.session_state.selected_industry][TICKER_COLUMN_NAME].dropna().unique()
                 industry_signals = st.session_state.all_signals_df[st.session_state.all_signals_df['Ticker'].isin(industry_tickers)].copy()
@@ -374,17 +374,37 @@ else:
                 st.subheader(f"{st.session_state.selected_industry} Signals", divider='rainbow')
                 
                 if not industry_signals.empty:
-                    # Sort by Signal importance: Strong Buy > Buy > Hold > Sell
+                    # 1. Define order values for sorting and ranking
                     signal_order = {'Strong Buy': 4, 'Buy': 3, 'Hold / Monitor': 2, 'Sell / Avoid': 1, 'N/A (Data Error)': 0, 'N/A (Fetch Error)': 0}
                     industry_signals['Order'] = industry_signals['Signal'].map(signal_order)
-                    
-                    # Sort by Order and then Ticker name for stability
-                    industry_signals = industry_signals.sort_values(by=['Order', 'Ticker'], ascending=[False, True]).drop(columns=['Order'])
+
+                    # 2. Sort by Order descending (best signals first)
+                    industry_signals = industry_signals.sort_values(by=['Order', 'Ticker'], ascending=[False, True]).reset_index(drop=True)
+
+                    # 3. Assign Rank only to valid signals (Order > 0)
+                    valid_indices = industry_signals[industry_signals['Order'] > 0].index
+                    industry_signals.loc[valid_indices, 'Rank'] = range(1, len(valid_indices) + 1)
+                    industry_signals['Rank'] = industry_signals['Rank'].fillna('-').astype(str)
+
+                    # 4. Define the styling function for coloring the 'Recommendation' column
+                    def color_signals(s):
+                        if s == 'Strong Buy' or s == 'Buy':
+                            return 'background-color: #d4edda; color: #155724; font-weight: bold;' # Light Green
+                        elif s == 'Hold / Monitor':
+                            return 'background-color: #fff3cd; color: #856404;' # Light Yellow/Orange
+                        elif s == 'Sell / Avoid':
+                            return 'background-color: #f8d7da; color: #721c24; font-weight: bold;' # Light Red
+                        else:
+                            return 'background-color: #e2e3e5; color: #383d41;' # Grey for N/A
+
+                    # Clean up and prepare for display
+                    styled_df = industry_signals[['Rank', 'Ticker', 'Signal']].rename(columns={'Ticker': 'Stock', 'Signal': 'Recommendation'})
                     
                     st.caption(f"Showing {len(industry_signals)} stocks in this industry.")
 
+                    # 5. Apply styling and display the DataFrame
                     st.dataframe(
-                        industry_signals.rename(columns={'Ticker': 'Stock', 'Signal': 'Recommendation'}),
+                        styled_df.style.applymap(color_signals, subset=['Recommendation']),
                         hide_index=True,
                         use_container_width=True,
                     )
