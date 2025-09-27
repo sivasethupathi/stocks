@@ -341,7 +341,18 @@ else:
                     else:
                         df_filtered = df_full
                         
-                    st.session_state.ticker_list = df_filtered[TICKER_COLUMN_NAME].dropna().unique().tolist()
+                    # Calculate ranks for the filtered set (if not All Industries)
+                    if st.session_state.selected_industry != "All Industries":
+                        industry_signals = st.session_state.all_signals_df[st.session_state.all_signals_df['Ticker'].isin(df_filtered[TICKER_COLUMN_NAME].unique())].copy()
+                        signal_order = {'Strong Buy': 4, 'Buy': 3, 'Hold / Monitor': 2, 'Sell / Avoid': 1, 'N/A (Data Error)': 0, 'N/A (Fetch Error)': 0}
+                        industry_signals['Order'] = industry_signals['Signal'].map(signal_order)
+                        
+                        # Sort by rank and update ticker_list to match the ranked order
+                        industry_signals = industry_signals.sort_values(by=['Order', 'Ticker'], ascending=[False, True])
+                        st.session_state.ticker_list = industry_signals['Ticker'].tolist()
+                    else:
+                        st.session_state.ticker_list = df_filtered[TICKER_COLUMN_NAME].dropna().unique().tolist()
+                        
                     st.session_state.current_stock_index = 0
                     st.rerun() # Rerun to display the first stock in the newly filtered list
 
@@ -368,7 +379,8 @@ else:
                 
             # --- DISPLAY: SPECIFIC INDUSTRY (Full List with Rank and Styling) ---
             else:
-                industry_tickers = df_full[df_full[INDUSTRY_COLUMN_NAME] == st.session_state.selected_industry][TICKER_COLUMN_NAME].dropna().unique()
+                # Use the logic from the button click to get the already sorted list
+                industry_tickers = st.session_state.ticker_list 
                 industry_signals = st.session_state.all_signals_df[st.session_state.all_signals_df['Ticker'].isin(industry_tickers)].copy()
                 
                 st.subheader(f"{st.session_state.selected_industry} Signals", divider='rainbow')
@@ -378,24 +390,33 @@ else:
                     signal_order = {'Strong Buy': 4, 'Buy': 3, 'Hold / Monitor': 2, 'Sell / Avoid': 1, 'N/A (Data Error)': 0, 'N/A (Fetch Error)': 0}
                     industry_signals['Order'] = industry_signals['Signal'].map(signal_order)
 
-                    # 2. Sort by Order descending (best signals first)
-                    industry_signals = industry_signals.sort_values(by=['Order', 'Ticker'], ascending=[False, True]).reset_index(drop=True)
+                    # Ensure the dataframe is sorted by the ranked order that matches ticker_list
+                    industry_signals = industry_signals.set_index('Ticker').reindex(industry_tickers).reset_index()
 
                     # 3. Assign Rank only to valid signals (Order > 0)
                     valid_indices = industry_signals[industry_signals['Order'] > 0].index
                     industry_signals.loc[valid_indices, 'Rank'] = range(1, len(valid_indices) + 1)
-                    industry_signals['Rank'] = industry_signals['Rank'].fillna('-').astype(str)
+                    
+                    # Fix: Ensure Rank is integer then string
+                    industry_signals['Rank'] = industry_signals['Rank'].fillna(0).astype(int)
+                    industry_signals.loc[industry_signals['Rank'] == 0, 'Rank'] = '-'
+                    industry_signals['Rank'] = industry_signals['Rank'].astype(str)
 
-                    # 4. Define the styling function for coloring the 'Recommendation' column
+
+                    # 4. Define the styling function for coloring the 'Recommendation' column (Rich Colors)
                     def color_signals(s):
                         if s == 'Strong Buy' or s == 'Buy':
-                            return 'background-color: #d4edda; color: #155724; font-weight: bold;' # Light Green
+                            # Vibrant Green
+                            return 'background-color: #2ECC71; color: white; font-weight: bold;' 
                         elif s == 'Hold / Monitor':
-                            return 'background-color: #fff3cd; color: #856404;' # Light Yellow/Orange
+                            # Rich Gold/Yellow
+                            return 'background-color: #F39C12; color: #333333;' 
                         elif s == 'Sell / Avoid':
-                            return 'background-color: #f8d7da; color: #721c24; font-weight: bold;' # Light Red
+                            # Strong Red
+                            return 'background-color: #E74C3C; color: white; font-weight: bold;' 
                         else:
-                            return 'background-color: #e2e3e5; color: #383d41;' # Grey for N/A
+                            # Grey for N/A
+                            return 'background-color: #BDC3C7; color: #383d41;'
 
                     # Clean up and prepare for display
                     styled_df = industry_signals[['Rank', 'Ticker', 'Signal']].rename(columns={'Ticker': 'Stock', 'Signal': 'Recommendation'})
@@ -403,11 +424,23 @@ else:
                     st.caption(f"Showing {len(industry_signals)} stocks in this industry.")
 
                     # 5. Apply styling and display the DataFrame
-                    st.dataframe(
+                    # Adding a unique key and selection mode for clickability
+                    selected_rows = st.dataframe(
                         styled_df.style.applymap(color_signals, subset=['Recommendation']),
                         hide_index=True,
                         use_container_width=True,
+                        selection_mode='single-row',
+                        key=f'industry_list_df_{st.session_state.selected_industry}'
                     )
+
+                    # 6. Check for clicks and update the main content
+                    if selected_rows and selected_rows['selection']['rows']:
+                        selected_rank_index = selected_rows['selection']['rows'][0]
+                        
+                        if selected_rank_index != st.session_state.current_stock_index:
+                            st.session_state.current_stock_index = selected_rank_index
+                            st.rerun()
+
                 else:
                     st.info(f"No valid signal data found for stocks in the {st.session_state.selected_industry} industry.")
 
