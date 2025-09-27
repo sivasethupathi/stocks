@@ -141,8 +141,6 @@ def calculate_swing_trade_analysis(history):
     macd_signal = macd_indicator.macd_signal().iloc[-1]
     obv_indicator = OnBalanceVolumeIndicator(close, history['Volume'])
     obv_slope = obv_indicator.on_balance_volume().diff().rolling(window=5).mean().iloc[-1]
-    # atr_14 is not used in the score but kept for completeness/future use
-    # atr_14 = AverageTrueRange(history['High'], history['Low'], close, window=14).average_true_range().iloc[-1]
 
     indicators = {"20W SMA": sma_20, "50W SMA": sma_50, "RSI (14)": rsi_14, "MACD Line": macd_line, "MACD Signal": macd_signal}
 
@@ -169,7 +167,7 @@ def calculate_swing_trade_analysis(history):
         
     return indicators, recommendation, "\n\n".join(reasons)
 
-# --- NEW CACHED FUNCTION TO CALCULATE ALL SIGNALS ---
+# --- CACHED FUNCTION TO CALCULATE ALL SIGNALS ---
 @st.cache_data(ttl=3600)
 def calculate_all_stock_signals(df, ticker_col):
     """
@@ -214,10 +212,13 @@ def display_stock_analysis(ticker):
         
         current_price = history['Close'].iloc[-1]
         
+        # --- FIX APPLIED HERE: Ensure '2025-03-28' is used for the FY comparison ---
         # Calculate year-to-date or FY move (using 2025-03-28 as the reference point for FY)
-        price_mar_28, date_mar_28 = get_price_on_date(daily_history, '2025-03-27')
+        price_mar_28, date_mar_28 = get_price_on_date(daily_history, '2025-03-28') 
         move_fy_percent = None
         fy_delta_text = "N/A"
+        
+        # Calculate the price movement and update the delta text
         if price_mar_28 and current_price:
             move_fy_percent = ((current_price - price_mar_28) / price_mar_28) * 100
             fy_delta_text = f"from ₹{price_mar_28:,.2f} on {date_mar_28.strftime('%d-%b-%Y')}"
@@ -226,6 +227,7 @@ def display_stock_analysis(ticker):
         m_col1.metric("Current Price", f"₹{current_price:,.2f}")
         m_col2.metric("Swing Signal", swing_recommendation)
         m_col3.metric("Intrinsic Value", f"₹{intrinsic_value:,.2f}" if intrinsic_value else "N/A")
+        # The metric is now comparing current price to the March 28 price
         m_col4.metric(label="Move within FY", value=f"{move_fy_percent:.2f}%" if move_fy_percent is not None else "N/A", delta=fy_delta_text)
         m_col5.metric("Buy Price (≈20W SMA)", f"₹{swing_indicators['20W SMA']:,.2f}" if swing_indicators else "N/A")
 
@@ -272,7 +274,7 @@ def display_stock_analysis(ticker):
     except Exception as e:
         st.error(f"An error occurred while processing **{ticker}**: {e}")
         
-    # NSE Website Link (as requested)
+    # NSE Website Link (as requested previously)
     st.markdown(f"**🔗 External Link:** [View {ticker} on NSE India](https://www.nseindia.com/get-quotes/equity?symbol={ticker})")
 
 
@@ -310,7 +312,6 @@ else:
         # Check if selection changed to trigger a refresh
         if new_selected_industry != st.session_state.selected_industry:
             st.session_state.selected_industry = new_selected_industry
-            # We don't rerun here, we wait for the button click below
 
         button_clicked = st.button("🚀 Analyze Selection", type="primary")
 
