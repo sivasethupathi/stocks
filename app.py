@@ -212,23 +212,33 @@ def display_stock_analysis(ticker):
         
         current_price = history['Close'].iloc[-1]
         
-        # --- FIX APPLIED HERE: Ensure '2025-03-28' is used for the FY comparison ---
+        # --- MODIFIED LOGIC FOR FY MOVE METRIC ---
         # Calculate year-to-date or FY move (using 2025-03-28 as the reference point for FY)
         price_mar_28, date_mar_28 = get_price_on_date(daily_history, '2025-03-28') 
         move_fy_percent = None
-        fy_delta_text = "N/A"
+        
+        # Set a default delta text if the price is unavailable (most likely scenario for a future date)
+        fy_delta_text = f"FY Start Price (28-Mar-2025) Unavailable" 
+        metric_value_display = "N/A"
         
         # Calculate the price movement and update the delta text
-        if price_mar_28 and current_price:
-            move_fy_percent = ((current_price - price_mar_28) / price_mar_28) * 100
-            fy_delta_text = f"from ₹{price_mar_28:,.2f} on {date_mar_28.strftime('%d-%b-%Y')}"
+        if price_mar_28 is not None and current_price is not None:
+            if price_mar_28 != 0:
+                move_fy_percent = ((current_price - price_mar_28) / price_mar_28) * 100
+                
+                # Update the delta text to explicitly show the base price and date
+                fy_delta_text = f"from ₹{price_mar_28:,.2f} on {date_mar_28.strftime('%d-%b-%Y')}"
+                metric_value_display = f"{move_fy_percent:.2f}%"
+            else:
+                 # If price is zero, we can't calculate percentage
+                 fy_delta_text = "Base Price is Zero"
 
         m_col1, m_col2, m_col3, m_col4, m_col5 = st.columns(5)
         m_col1.metric("Current Price", f"₹{current_price:,.2f}")
         m_col2.metric("Swing Signal", swing_recommendation)
         m_col3.metric("Intrinsic Value", f"₹{intrinsic_value:,.2f}" if intrinsic_value else "N/A")
-        # The metric is now comparing current price to the March 28 price
-        m_col4.metric(label="Move within FY", value=f"{move_fy_percent:.2f}%" if move_fy_percent is not None else "N/A", delta=fy_delta_text)
+        # Use the derived display values, ensuring the delta text is informative
+        m_col4.metric(label="Move within FY", value=metric_value_display, delta=fy_delta_text)
         m_col5.metric("Buy Price (≈20W SMA)", f"₹{swing_indicators['20W SMA']:,.2f}" if swing_indicators else "N/A")
 
         st.divider()
