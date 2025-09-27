@@ -254,7 +254,8 @@ def display_stock_analysis(ticker):
 
     except Exception as e:
         st.error(f"An error occurred while processing **{ticker}**: {e}")
-
+# NEW LINE ADDED HERE:
+    st.markdown(f"**🔗 External Link:** [View {ticker} on NSE India](https://www.nseindia.com/get-quotes/equity?symbol={ticker})")
 # ======================================================================================
 # STREAMLIT UI & LOGIC
 # ======================================================================================
