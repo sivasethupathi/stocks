@@ -219,23 +219,67 @@ def create_nse_session() -> requests.Session:
         return None
 
 def fetch_nse_quote_data_export(session: requests.Session, ticker: str) -> Dict[str, Any]:
-    """Fetches quote data for export (similar to the logic in stock_report_generator)."""
+    """
+    Fetches the main stock quote data from the NSE API, including all detailed trade metrics.
+    """
     data = {}
     NSE_QUOTE_API = f"https://www.nseindia.com/api/quote-equity?symbol={ticker}"
     try:
         response = session.get(NSE_QUOTE_API, headers=HEADERS, timeout=10)
         response.raise_for_status()
         quote_data = response.json()
-        total_traded_value = quote_data.get('totalTradedValue', 0)
         
+        # --- Extract metric groups ---
+        info = quote_data.get('info', {})
+        metadata = quote_data.get('metadata', {})
+        security_info = quote_data.get('securityInfo', {})
+        price_band = quote_data.get('priceBand', {})
+        p_data = quote_data.get('preOpenMarket', {}).get('finalPrice', {})
+        
+        # --- Calculations and Conversions ---
+        volume = quote_data.get('totalTradedVolume', 0)
+        value = quote_data.get('totalTradedValue', 0)
+        delivery_qty = security_info.get('deliveryQuantity', 0)
+        
+        deliverable_percentage = (delivery_qty / volume * 100) if volume > 0 else 0
+        
+        # Use day high/low for indicative daily volatility (as a percentage of day average)
+        day_high = quote_data.get('dayHigh', 0)
+        day_low = quote_data.get('dayLow', 0)
+        daily_volatility_percent = (day_high - day_low) / day_low * 100 if day_low > 0 else 0
+        
+        # --- Final Data Structure for Export ---
         data['Latest Price Data'] = {
-            'Company Name': quote_data.get('info', {}).get('companyName', 'N/A'),
-            'Latest Trade Date': quote_data.get('metadata', {}).get('lastUpdateTime', 'N/A'),
-            'Adjusted P/E (TTM)': quote_data.get('preOpenMarket', {}).get('finalPrice', {}).get('pE', 'N/A'),
-            'Total Traded Volume (Shares)': f"{quote_data.get('totalTradedVolume', 'N/A'):,}",
-            'Total Traded Value (₹ Crores)': f"{round(total_traded_value / 10000000, 2):,}" 
+            'Company Name': info.get('companyName', 'N/A'),
+            'Basic Industry': info.get('industry', 'N/A'),
+            'Latest Trade Date': metadata.get('lastUpdateTime', 'N/A'),
+            'Total Capital Market (₹ Crore)': f"{round(info.get('marketCap', 0) / 10000000, 2):,}",
+            
+            # Trade Volume/Value
+            'Total Traded Volume (Lakhs)': f"{round(volume / 100000, 2):,}",
+            'Total Traded Value (₹ Crores)': f"{round(value / 10000000, 2):,}",
+            'Delivery Percentage': f"{deliverable_percentage:.2f}%",
+
+            # Price Metrics
+            'Face Value (₹)': security_info.get('faceValue', 'N/A'),
+            'Date of Listing': security_info.get('listingDate', 'N/A'),
+            
+            '52 Week High (₹)': metadata.get('weekHigh', 'N/A'),
+            '52 Week High Date': metadata.get('weekHighDate', 'N/A'),
+            '52 Week Low (₹)': metadata.get('weekLow', 'N/A'),
+            '52 Week Low Date': metadata.get('weekLowDate', 'N/A'),
+            
+            'Upper Circuit Band (₹)': price_band.get('max', 'N/A'),
+            'Lower Circuit Band (₹)': price_band.get('min', 'N/A'),
+            
+            # Volatility & P/E Ratios
+            'Daily Volatility (Indicative)': f"{daily_volatility_percent:.2f}%",
+            'Annualised Volatility': 'N/A (API Field Missing)', # Not directly available in quote API
+            'Adjusted P/E (TTM)': p_data.get('pE', 'N/A'),
+            'Symbol P/E': metadata.get('symbolPE', 'N/A'),
         }
     except Exception:
+        # Catch any errors during API call or processing
         pass
     return data
 
@@ -409,17 +453,49 @@ def generate_word_document_bytes(ticker: str, isin: str = "INE009A01021") -> Byt
     document.add_paragraph(f"Report Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     document.add_paragraph("---")
 
-    # --- Section 1: NSE Live Quote and Valuation Data ---
-    document.add_heading("1. Live Market and Valuation Metrics (NSE)", level=1)
+    # --- Section 1: Trade Information and Price Metrics (NSE) ---
+    document.add_heading(f"1. Trade Information and Price Metrics (NSE)", level=1)
     if 'Latest Price Data' in quote_data:
         data = quote_data['Latest Price Data']
-        document.add_paragraph(f"Company: {data.get('Company Name', 'N/A')}")
-        document.add_paragraph(f"Last Updated: {data.get('Latest Trade Date', 'N/A')}")
-        document.add_paragraph(f"Adjusted TTM P/E: {data.get('Adjusted P/E (TTM)', 'N/A')}")
-        document.add_paragraph(f"Total Traded Volume: {data.get('Total Traded Volume (Shares)', 'N/A')} Shares")
-        document.add_paragraph(f"Total Traded Value: ₹{data.get('Total Traded Value (₹ Crores)', 'N/A')} Crores")
+        
+        # Structure the trade data into a key-value DataFrame for clean presentation
+        trade_info_list = [
+            ("Company Name", data.get('Company Name', 'N/A')),
+            ("Basic Industry", data.get('Basic Industry', 'N/A')),
+            ("Last Updated", data.get('Latest Trade Date', 'N/A')),
+            ("", "---"), 
+            ("Total Capital Market", f"₹{data.get('Total Capital Market (₹ Crore)', 'N/A')} Crore"),
+            ("Date of Listing", data.get('Date of Listing', 'N/A')),
+            ("", "---"), 
+            ("Total Traded Volume", f"{data.get('Total Traded Volume (Lakhs)', 'N/A')} Lakhs"),
+            ("Total Traded Value", f"₹{data.get('Total Traded Value (₹ Crores)', 'N/A')} Crores"),
+            ("% of Deliverable / Traded Qty", data.get('Delivery Percentage', 'N/A')),
+            ("", "---"),
+            ("Adjusted P/E (TTM)", data.get('Adjusted P/E (TTM)', 'N/A')),
+            ("Symbol P/E", data.get('Symbol P/E', 'N/A')),
+            ("Face Value", f"₹{data.get('Face Value (₹)', 'N/A')}"),
+            ("", "---"),
+            ("52 Week High Amount", f"₹{data.get('52 Week High (₹)', 'N/A')}"),
+            ("52 Week High Date", data.get('52 Week High Date', 'N/A')),
+            ("52 Week Low Amount", f"₹{data.get('52 Week Low (₹)', 'N/A')}"),
+            ("52 Week Low Date", data.get('52 Week Low Date', 'N/A')),
+            ("", "---"),
+            ("Upper Circuit Band", f"₹{data.get('Upper Circuit Band (₹)', 'N/A')}"),
+            ("Lower Circuit Band", f"₹{data.get('Lower Circuit Band (₹)', 'N/A')}"),
+            ("Daily Volatility (Indicative)", data.get('Daily Volatility (Indicative)', 'N/A')),
+            ("Annualised Volatility", data.get('Annualised Volatility', 'N/A')),
+        ]
+        
+        df_trade_info = pd.DataFrame(trade_info_list, columns=['Metric', 'Value'])
+        
+        # Prepare for Word table (transpose to vertical list)
+        df_trade_info_filtered = df_trade_info[df_trade_info['Metric'] != ''].set_index('Metric').T
+
+        # Add the detailed table
+        add_dataframe_to_word(document, df_trade_info_filtered, table_style='Table Grid')
+
     else:
-        document.add_paragraph("Live market data could not be retrieved from NSE.")
+        document.add_paragraph("Trade information could not be retrieved from NSE.")
     
     document.add_paragraph("---")
 
