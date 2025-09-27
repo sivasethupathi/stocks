@@ -250,8 +250,8 @@ def calculate_quick_signals(df, ticker_col):
 
 def scrape_all_screener_data(ticker: str) -> Dict[str, Any]:
     """
-    Scrapes all structured data tables from the Screener page for a given ticker.
-    Returns a dictionary where keys are section titles and values are DataFrames or dicts.
+    Scrapes all structured data tables, text, and metrics from the Screener page for a given ticker.
+    Returns a dictionary where keys are section titles and values are DataFrames or dicts/lists.
     """
     url = f"https://www.screener.in/company/{ticker}/consolidated/"
     scraped_data = {}
@@ -263,7 +263,6 @@ def scrape_all_screener_data(ticker: str) -> Dict[str, Any]:
         soup = BeautifulSoup(response.content, 'html.parser')
         
         # --- 1. Top Ratios/Key Metrics ---
-        # Note: This list also contains company name and basic industry
         key_metrics = {}
         ratio_list = soup.select_one('#top-ratios')
         if ratio_list:
@@ -280,20 +279,33 @@ def scrape_all_screener_data(ticker: str) -> Dict[str, Any]:
         company_name = soup.select_one('.heading h1').get_text(strip=True) if soup.select_one('.heading h1') else ticker
         industry = soup.select_one('.company-industry a').get_text(strip=True) if soup.select_one('.company-industry a') else 'N/A'
         
+        # --- New: About and Key Points ---
+        about_tag = soup.find('p', {'class': 'sub-title'})
+        about = about_tag.get_text(strip=True) if about_tag else 'About section not found.'
+
+        key_points = []
+        key_points_section = soup.select_one('.full-screen.panel .info')
+        if key_points_section:
+            for li in key_points_section.find_all('li'):
+                key_points.append(li.get_text(strip=True))
+        
         scraped_data['0. Company Summary'] = {
             'Name': company_name,
             'Ticker': ticker,
             'Industry': industry,
-            'Latest Metrics': pd.DataFrame(key_metrics.items(), columns=['Metric', 'Value']).set_index('Metric').T
+            'About': about,
+            'Key Highlights': key_points,
+            'Latest Metrics': key_metrics 
         }
         
-        # --- 2. HTML Tables (Quarterly, P&L, BS, CF, Shareholding) ---
+        # --- 2. HTML Tables (Quarterly, P&L, BS, CF, Shareholding, and PEERS) ---
         table_sections = [
             ('1. Quarterly Results', '#quarterly', 'Quarterly'),
             ('2. Profit & Loss', '#profit-loss', 'Annual'),
             ('3. Balance Sheet', '#balance-sheet', 'Annual'),
             ('4. Cash Flow', '#cash-flow', 'Annual'),
-            ('5. Shareholding Pattern', '#shareholding', 'Latest')
+            ('5. Shareholding Pattern', '#shareholding', 'Latest'),
+            ('6. Peer Comparison', '#peers', 'Peers')
         ]
         
         for title, selector, transpose_mode in table_sections:
@@ -303,12 +315,13 @@ def scrape_all_screener_data(ticker: str) -> Dict[str, Any]:
                     df_list = pd.read_html(str(section_tag))
                     if df_list:
                         df = df_list[0].fillna('')
-                        # Transpose logic for P&L, BS, CF, and Shareholding (Rows as metrics, Columns as dates)
+                        
+                        # Transpose logic for P&L, BS, CF, and Quarterly (Rows as metrics, Columns as dates)
                         if transpose_mode in ['Annual', 'Quarterly']:
                             df = df.set_index(df.columns[0])
                             df.index.name = df.columns.name
                         
-                        # Fix multi-index columns for Shareholding if present
+                        # Clean up multi-index columns for Shareholding/Peers if present
                         if isinstance(df.columns, pd.MultiIndex):
                             df.columns = [' '.join(map(str, col)).strip() for col in df.columns.values]
                         
@@ -328,11 +341,8 @@ def add_dataframe_to_word(document, df: pd.DataFrame, table_style: str = 'Table 
     document.add_paragraph()
     has_index = df.index.name is not None or not pd.RangeIndex(start=0, stop=len(df.index)).equals(df.index)
 
-    # Ensure index column is present if we are treating the index as part of the data
     rows, cols = df.shape
     num_cols = cols + (1 if has_index else 0)
-    
-    # Calculate the number of header rows
     num_header_rows = 1
 
     table = document.add_table(rows + num_header_rows, num_cols)
@@ -361,21 +371,17 @@ def add_dataframe_to_word(document, df: pd.DataFrame, table_style: str = 'Table 
             current_col = 1
             
         for j, value in enumerate(row):
-            text_value = str(value).replace('\u2010', '-') # Replace hyphen-like character
+            text_value = str(value).replace('\u2010', '-') 
             
-            # Formatting (e.g., thousands separator)
             try:
-                # Attempt to format only numeric values that are not percentages (which contain %)
                 if text_value.replace(',', '').replace('.', '', 1).isdigit() and '%' not in text_value:
                     float_value = float(text_value.replace(',', ''))
-                    # Format as comma-separated number
                     text_value = f"{float_value:,.2f}" 
             except:
                 pass
 
             row_cells[current_col + j].text = text_value
             
-            # Align numeric columns to the right
             if any(char.isdigit() for char in text_value) and not any(char.isalpha() for char in text_value):
                  row_cells[current_col + j].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
             else:
@@ -384,7 +390,6 @@ def add_dataframe_to_word(document, df: pd.DataFrame, table_style: str = 'Table 
 def generate_word_document_bytes(ticker: str, isin: str = "") -> BytesIO:
     """Fetches all Screener data, generates the Word document, and returns it as a BytesIO object."""
     
-    # Data is fetched entirely from Screener now
     scraped_data = scrape_all_screener_data(ticker)
 
     document = Document()
@@ -395,8 +400,12 @@ def generate_word_document_bytes(ticker: str, isin: str = "") -> BytesIO:
     font.name = 'Calibri'
     font.size = Pt(11)
 
+    # --- Get Core Data Blocks ---
+    summary = scraped_data.pop('0. Company Summary', {})
+    latest_metrics = summary.get('Latest Metrics', {})
+    
     # --- Main Title ---
-    company_name = scraped_data.get('0. Company Summary', {}).get('Name', ticker)
+    company_name = summary.get('Name', ticker)
     document.add_heading(f"Comprehensive Stock Analysis Report: {company_name} ({ticker})", 0)
     document.add_paragraph(f"Source: Screener.in | Report Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     document.add_paragraph("---")
@@ -408,36 +417,105 @@ def generate_word_document_bytes(ticker: str, isin: str = "") -> BytesIO:
         doc_io.seek(0)
         return doc_io
 
-    # --- Process and Add Sections to Document ---
-    
-    # 1. Company Summary (Name, Ticker, Industry, Latest Metrics)
-    summary = scraped_data.pop('0. Company Summary', {})
+    # ==================================================================================
+    # 1. COMPANY OVERVIEW AND KEY RATIOS
+    # ==================================================================================
     document.add_heading("1. Company Overview and Key Ratios", level=1)
     
+    # 1.1 Company Description
+    document.add_heading("1.1. About the Company", level=2)
+    document.add_paragraph(f"NSE Ticker: {ticker}")
     document.add_paragraph(f"Industry: {summary.get('Industry', 'N/A')}")
-    document.add_paragraph(f"Key Financial Ratios (Latest Trailing Twelve Months/Yearly Data):")
+    # Note: BSE code is omitted as it is not consistently available on this page.
+    document.add_paragraph(summary.get('About', 'About description not available.'))
     
-    # Add the metrics table (transposed)
-    if 'Latest Metrics' in summary and not summary['Latest Metrics'].empty:
-        add_dataframe_to_word(document, summary['Latest Metrics'].T.reset_index().rename(columns={'index': 'Metric'}), table_style='Light List Accent 1')
+    # 1.2 Key Highlights
+    document.add_heading("1.2. Key Highlights", level=2)
+    key_highlights = summary.get('Key Highlights', [])
+    if key_highlights:
+        for point in key_highlights:
+            document.add_paragraph(point, style='List Bullet')
+    else:
+        document.add_paragraph("Key highlights not found.")
+
+    # 1.3 Key Valuation and Performance Metrics (Organized List)
+    document.add_heading("1.3. Key Valuation and Performance Metrics", level=2)
+    
+    # Define groups for organized list output
+    metrics_to_group = [
+        ("Current Price (₹)", 'Stock Price'),
+        ("Book Value (₹)", 'Book Value'),
+        ("High / Low (52w)", '52w High / Low'),
+        ("Dividend Yield (%)", 'Dividend Yield'),
+        ("Face Value (₹)", 'Face Value'),
+        ("---", None),
+        ("Market Cap (Cr)", 'Market Cap'),
+        ("EV/EBITDA", 'EV/EBITDA'),
+        ("Stock P/E", 'Stock P/E'),
+        ("Price to Earning", 'Price to Earning'),
+        ("Price to Book Value", 'Price to book value'),
+        ("Price to Sales", 'Price to Sales'),
+        ("Industry PE", 'Industry PE'),
+        ("EPS (TTM)", 'EPS'),
+        ("---", None),
+        ("ROE (%)", 'ROE'),
+        ("ROCE (%)", 'ROCE'),
+        ("Return on Assets (%)", 'Return on assets'),
+        ("Sales Growth (TTM)", 'Sales growth'),
+        ("Sales Growth (3Yr Avg)", 'Sales growth 3Years'),
+        ("Profit Growth (TTM)", 'Profit growth'),
+        ("---", None),
+        ("Debt (Cr)", 'Debt'),
+        ("Debt to Equity", 'Debt to equity'),
+        ("Current Ratio", 'Current ratio'),
+        ("Promoter Holding (%)", 'Promoter holding'),
+        ("Change in Prom Hold (%)", 'Change in Promoters holding'),
+    ]
+
+    for display_name, screener_key in metrics_to_group:
+        if screener_key is None: # Separator
+            document.add_paragraph("")
+        else:
+            # Use the requested key or the display name as fallback for finding the value
+            value = latest_metrics.get(screener_key) or latest_metrics.get(display_name) or 'N/A'
+            p = document.add_paragraph()
+            p.add_run(f"{display_name}: ").bold = True
+            p.add_run(str(value))
     
     document.add_paragraph("---")
 
-    # 2. Financial Tables (Quarterly, P&L, BS, CF, Shareholding)
+    # ==================================================================================
+    # 2. PEER COMPARISON
+    # ==================================================================================
+    document.add_heading("2. Peer Comparison", level=1)
+    df_peers = scraped_data.pop('6. Peer Comparison', pd.DataFrame())
+    if not df_peers.empty:
+        add_dataframe_to_word(document, df_peers, table_style='Table Grid')
+    else:
+        document.add_paragraph("Peer comparison data not available.")
+    document.add_paragraph("---")
+
+    # ==================================================================================
+    # 3. DETAILED FINANCIAL STATEMENTS
+    # ==================================================================================
+    document.add_heading("3. Detailed Financial Statements", level=1)
     
-    section_index = 2
-    for title_key, df in scraped_data.items():
+    section_index = 1
+    # Define a clear order for the financial tables
+    table_titles_order = ['1. Quarterly Results', '2. Profit & Loss', '3. Balance Sheet', '4. Cash Flow', '5. Shareholding Pattern']
+    
+    for title_key in table_titles_order:
+        df = scraped_data.get(title_key)
         if isinstance(df, pd.DataFrame) and not df.empty:
-            document.add_heading(f"{section_index}. {title_key}", level=1)
+            document.add_heading(f"3.{section_index}. {title_key.split('. ')[1]} (Figures in Cr unless specified)", level=2)
             
-            # For shareholding, ensure index is named correctly if applicable
             if 'Shareholding' in title_key:
                  df.index.name = 'Investor Category'
 
             add_dataframe_to_word(document, df, table_style='Table Grid')
             section_index += 1
-            document.add_paragraph("---")
-
+            document.add_paragraph("")
+    
     # Save document to a BytesIO stream
     doc_io = BytesIO()
     document.save(doc_io)
