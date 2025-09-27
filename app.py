@@ -27,6 +27,7 @@ st.markdown("Select an industry from your Excel file to get a consolidated analy
 @st.cache_data(ttl=3600) # Cache data for 1 hour
 def get_stock_data(ticker):
     """Fetches all necessary data for a stock from yfinance."""
+    # Ensure ticker format for NSE
     stock = yf.Ticker(f"{ticker}.NS")
     history_weekly = stock.history(period="3y", interval="1wk")
     history_daily = stock.history(period="2y", interval="1d")
@@ -39,6 +40,7 @@ def get_price_on_date(daily_history, target_date_str):
     """Finds the closest closing price and the actual date to a target date from daily history."""
     try:
         target_date = pd.to_datetime(target_date_str)
+        # Use 'nearest' method to find the closest trading day
         closest_date_index = daily_history.index.get_indexer([target_date], method='nearest')[0]
         actual_date = daily_history.index[closest_date_index]
         price = daily_history.iloc[closest_date_index]['Close']
@@ -124,30 +126,30 @@ def calculate_fibonacci_levels(history):
 def calculate_swing_trade_analysis(history):
     """Calculates swing trading indicators and generates a recommendation."""
     if len(history) < 52:
+        # Return structure compatible with the caller when data is insufficient
         return None, "Insufficient Data", "Not enough weekly data for full analysis."
 
     close = history['Close']
     price = close.iloc[-1]
     
+    # Calculate indicators
     sma_20 = close.rolling(window=20).mean().iloc[-1]
     sma_50 = close.rolling(window=50).mean().iloc[-1]
     rsi_14 = RSIIndicator(close, window=14).rsi().iloc[-1]
     macd_indicator = MACD(close, window_slow=26, window_fast=12, window_sign=9)
     macd_line = macd_indicator.macd().iloc[-1]
     macd_signal = macd_indicator.macd_signal().iloc[-1]
-    macd_hist = macd_indicator.macd_diff().iloc[-1]
-    bb_indicator = BollingerBands(close, window=20, window_dev=2)
-    bb_high = bb_indicator.bollinger_hband().iloc[-1]
-    bb_low = bb_indicator.bollinger_lband().iloc[-1]
     obv_indicator = OnBalanceVolumeIndicator(close, history['Volume'])
     obv_slope = obv_indicator.on_balance_volume().diff().rolling(window=5).mean().iloc[-1]
-    atr_14 = AverageTrueRange(history['High'], history['Low'], close, window=14).average_true_range().iloc[-1]
+    # atr_14 is not used in the score but kept for completeness/future use
+    # atr_14 = AverageTrueRange(history['High'], history['Low'], close, window=14).average_true_range().iloc[-1]
 
     indicators = {"20W SMA": sma_20, "50W SMA": sma_50, "RSI (14)": rsi_14, "MACD Line": macd_line, "MACD Signal": macd_signal}
 
     score = 0
     reasons = []
     
+    # Scoring Logic
     if price > sma_20: score += 2; reasons.append("✅ Price > 20W SMA (Short-term trend is up).")
     else: reasons.append("❌ Price < 20W SMA (Short-term trend is down).")
     if sma_20 > sma_50: score += 2; reasons.append("✅ 20W SMA > 50W SMA (Golden Cross).")
@@ -159,6 +161,7 @@ def calculate_swing_trade_analysis(history):
     if obv_slope > 0: score += 2; reasons.append("✅ OBV trend is positive (Volume confirms trend).")
     else: reasons.append("❌ OBV trend is negative (Volume does not confirm).")
     
+    # Final Recommendation
     if score >= 7: recommendation = "Strong Buy"
     elif score >= 5: recommendation = "Buy"
     elif score >= 3: recommendation = "Hold / Monitor"
@@ -166,38 +169,39 @@ def calculate_swing_trade_analysis(history):
         
     return indicators, recommendation, "\n\n".join(reasons)
 
+# --- NEW CACHED FUNCTION TO CALCULATE ALL SIGNALS ---
 @st.cache_data(ttl=3600)
-def calculate_quick_signals(df, ticker_col):
+def calculate_all_stock_signals(df, ticker_col):
     """
-    Analyzes all stocks in the DataFrame to find top buy/sell signals.
-    REMOVED THE [:50] CAP.
+    Calculates swing signals for ALL available stocks in the DataFrame.
+    Returns the full DataFrame of results, total stocks, and successfully analyzed stocks.
     """
     tickers = df[ticker_col].dropna().unique()
     total_stocks = len(tickers)
     all_signals = []
+    analyzed_count = 0
     
-    # Iterate over ALL available tickers
     for ticker in tickers: 
         try:
+            # get_stock_data is also cached, ensuring efficiency on subsequent runs
             history, _, _, _ = get_stock_data(ticker)
             if not history.empty and len(history) >= 52:
                 _, recommendation, _ = calculate_swing_trade_analysis(history)
                 all_signals.append({'Ticker': ticker, 'Signal': recommendation})
-        except Exception: continue
+                analyzed_count += 1
+            else:
+                 # If not enough data, mark as skip
+                all_signals.append({'Ticker': ticker, 'Signal': 'N/A (Data Error)'})
+        except Exception: 
+            all_signals.append({'Ticker': ticker, 'Signal': 'N/A (Fetch Error)'})
+            continue
     
-    if not all_signals: return pd.DataFrame(), pd.DataFrame(), total_stocks, 0
-    
-    signals_df = pd.DataFrame(all_signals)
-    analyzed_stocks = len(signals_df)
-    
-    buy_signals = signals_df[signals_df['Signal'].isin(['Strong Buy', 'Buy'])].head(3)
-    sell_signals = signals_df[signals_df['Signal'] == 'Sell / Avoid'].head(3)
-    
-    return buy_signals, sell_signals, total_stocks, analyzed_stocks
+    return pd.DataFrame(all_signals), total_stocks, analyzed_count
 
 def display_stock_analysis(ticker):
     """Displays analysis for a single stock."""
     try:
+        # Fetching data is cached for speed
         history, info, financials, daily_history = get_stock_data(ticker)
         if history.empty:
             st.warning(f"Could not fetch price history for **{ticker}**. Skipping.")
@@ -209,6 +213,8 @@ def display_stock_analysis(ticker):
         intrinsic_value = calculate_graham_intrinsic_value(info, financials)
         
         current_price = history['Close'].iloc[-1]
+        
+        # Calculate year-to-date or FY move (using 2025-03-28 as the reference point for FY)
         price_mar_28, date_mar_28 = get_price_on_date(daily_history, '2025-03-28')
         move_fy_percent = None
         fy_delta_text = "N/A"
@@ -231,6 +237,7 @@ def display_stock_analysis(ticker):
             st.subheader("Weekly Price Chart with Fibonacci Retracement")
             fib_levels, _, is_uptrend, high_price, low_price = calculate_fibonacci_levels(history)
             
+            # Setup Plotly Candlestick Chart
             fig = go.Figure(data=[go.Candlestick(x=history.index, open=history['Open'], high=history['High'], low=history['Low'], close=history['Close'], name='Price')])
             history['SMA_20W'] = history['Close'].rolling(window=20).mean()
             history['SMA_50W'] = history['Close'].rolling(window=50).mean()
@@ -254,7 +261,7 @@ def display_stock_analysis(ticker):
             _, fib_signal, _, _, _ = calculate_fibonacci_levels(history)
             st.info(fib_signal)
 
-            st.subheader("Key Financial Ratios")
+            st.subheader("Key Financial Ratios (Screener.in)")
             screener_data, screener_status = scrape_screener_data(ticker)
             if screener_status == "Success":
                 df_screener = pd.DataFrame(screener_data.items(), columns=['Ratio', 'Value'])
@@ -265,7 +272,7 @@ def display_stock_analysis(ticker):
     except Exception as e:
         st.error(f"An error occurred while processing **{ticker}**: {e}")
         
-    # LINE ADDED: NSE Website Link
+    # NSE Website Link (as requested)
     st.markdown(f"**🔗 External Link:** [View {ticker} on NSE India](https://www.nseindia.com/get-quotes/equity?symbol={ticker})")
 
 
@@ -276,33 +283,68 @@ EXCEL_FILE_PATH = "SELECTED STOCKS 22FEB2025.xlsx"
 TICKER_COLUMN_NAME = "NSE SYMBOL"
 INDUSTRY_COLUMN_NAME = "INDUSTRY"
 
+# Initialize Session State Variables
 if 'current_stock_index' not in st.session_state: st.session_state.current_stock_index = 0
 if 'ticker_list' not in st.session_state: st.session_state.ticker_list = []
-if 'quick_signals_calculated' not in st.session_state: st.session_state.quick_signals_calculated = False
+if 'selected_industry' not in st.session_state: st.session_state.selected_industry = "All Industries"
+if 'all_signals_df' not in st.session_state: st.session_state.all_signals_df = pd.DataFrame()
+if 'total_stocks' not in st.session_state: st.session_state.total_stocks = 0
+if 'analyzed_stocks' not in st.session_state: st.session_state.analyzed_stocks = 0
 
 if not os.path.exists(EXCEL_FILE_PATH):
     st.error(f"Error: The file '{EXCEL_FILE_PATH}' was not found.")
 else:
+    try:
+        df_full = pd.read_excel(EXCEL_FILE_PATH, sheet_name='Sheet1')
+        industries = ["All Industries"] + sorted(df_full[INDUSTRY_COLUMN_NAME].dropna().unique().tolist())
+    except Exception as e:
+        st.error(f"Could not read the Excel file. Error: {e}")
+        st.stop()
+    
     with st.sidebar:
         st.header("⚙️ Analysis Filter")
-        try:
-            df_full = pd.read_excel(EXCEL_FILE_PATH, sheet_name='Sheet1')
-            industries = ["All Industries"] + sorted(df_full[INDUSTRY_COLUMN_NAME].dropna().unique().tolist())
-            selected_industry = st.selectbox("Select an Industry:", industries)
+        
+        # 1. Industry Selection
+        new_selected_industry = st.selectbox("Select an Industry:", industries, key='sidebar_select')
+        
+        # Check if selection changed to trigger a refresh
+        if new_selected_industry != st.session_state.selected_industry:
+            st.session_state.selected_industry = new_selected_industry
+            # We don't rerun here, we wait for the button click below
+
+        button_clicked = st.button("🚀 Analyze Selection", type="primary")
+
+        # 2. Comprehensive Signal Calculation (Cached and runs once initially)
+        if st.session_state.all_signals_df.empty or button_clicked:
+            with st.spinner("Calculating swing signals for all stocks (This runs only once per hour or on first load)..."):
+                # Run the cached function to get all signals
+                df_signals, total_stocks, analyzed_stocks = calculate_all_stock_signals(df_full, TICKER_COLUMN_NAME)
+                st.session_state.all_signals_df = df_signals
+                st.session_state.total_stocks = total_stocks
+                st.session_state.analyzed_stocks = analyzed_stocks
+                
+                if button_clicked:
+                    # Filter the main analysis list based on the selected industry
+                    if st.session_state.selected_industry != "All Industries":
+                        df_filtered = df_full[df_full[INDUSTRY_COLUMN_NAME] == st.session_state.selected_industry]
+                    else:
+                        df_filtered = df_full
+                        
+                    st.session_state.ticker_list = df_filtered[TICKER_COLUMN_NAME].dropna().unique().tolist()
+                    st.session_state.current_stock_index = 0
+                    st.rerun() # Rerun to display the first stock in the newly filtered list
+
+        # 3. Conditional Sidebar Display
+        if not st.session_state.all_signals_df.empty:
             
-            if st.button("🚀 Analyze Selected Industry", type="primary"):
-                df_filtered = df_full[df_full[INDUSTRY_COLUMN_NAME] == selected_industry] if selected_industry != "All Industries" else df_full
-                st.session_state.ticker_list = df_filtered[TICKER_COLUMN_NAME].dropna().unique().tolist()
-                st.session_state.current_stock_index = 0
-                st.session_state.quick_signals_calculated = True
-                
-            if st.session_state.quick_signals_calculated:
-                with st.spinner("Calculating market snapshot across all stocks..."):
-                    buy_signals, sell_signals, total_stocks, analyzed_stocks = calculate_quick_signals(df_full, TICKER_COLUMN_NAME)
-                
+            # --- DISPLAY: ALL INDUSTRIES (Quick Snapshot) ---
+            if st.session_state.selected_industry == "All Industries":
                 st.subheader("Quick Signals Snapshot", divider='rainbow')
-                st.markdown(f"**Analyzed {analyzed_stocks} out of {total_stocks} stocks.**") # Display analysis count
+                st.markdown(f"**Market Coverage:** Analyzed **{st.session_state.analyzed_stocks}** of **{st.session_state.total_stocks}** tickers.")
                 
+                buy_signals = st.session_state.all_signals_df[st.session_state.all_signals_df['Signal'].isin(['Strong Buy', 'Buy'])].head(3)
+                sell_signals = st.session_state.all_signals_df[st.session_state.all_signals_df['Signal'] == 'Sell / Avoid'].head(3)
+
                 st.markdown("**Top 3 Buy Signals**")
                 if not buy_signals.empty:
                     for _, row in buy_signals.iterrows(): st.success(f"**{row['Ticker']}**: {row['Signal']}")
@@ -312,22 +354,49 @@ else:
                 if not sell_signals.empty:
                     for _, row in sell_signals.iterrows(): st.error(f"**{row['Ticker']}**: {row['Signal']}")
                 else: st.info("No strong sell signals found.")
-        except Exception as e:
-            st.error(f"Could not read the Excel file. Error: {e}")
+                
+            # --- DISPLAY: SPECIFIC INDUSTRY (Full List) ---
+            else:
+                industry_tickers = df_full[df_full[INDUSTRY_COLUMN_NAME] == st.session_state.selected_industry][TICKER_COLUMN_NAME].dropna().unique()
+                industry_signals = st.session_state.all_signals_df[st.session_state.all_signals_df['Ticker'].isin(industry_tickers)].copy()
+                
+                st.subheader(f"{st.session_state.selected_industry} Signals", divider='rainbow')
+                
+                if not industry_signals.empty:
+                    # Sort by Signal importance: Strong Buy > Buy > Hold > Sell
+                    signal_order = {'Strong Buy': 4, 'Buy': 3, 'Hold / Monitor': 2, 'Sell / Avoid': 1, 'N/A (Data Error)': 0, 'N/A (Fetch Error)': 0}
+                    industry_signals['Order'] = industry_signals['Signal'].map(signal_order)
+                    
+                    # Sort by Order and then Ticker name for stability
+                    industry_signals = industry_signals.sort_values(by=['Order', 'Ticker'], ascending=[False, True]).drop(columns=['Order'])
+                    
+                    st.caption(f"Showing {len(industry_signals)} stocks in this industry.")
 
+                    st.dataframe(
+                        industry_signals.rename(columns={'Ticker': 'Stock', 'Signal': 'Recommendation'}),
+                        hide_index=True,
+                        use_container_width=True,
+                    )
+                else:
+                    st.info(f"No valid signal data found for stocks in the {st.session_state.selected_industry} industry.")
+
+
+    # --- MAIN CONTENT LAYOUT ---
     if st.session_state.ticker_list:
         current_ticker = st.session_state.ticker_list[st.session_state.current_stock_index]
         
+        # Navigation Buttons
         col1, col2, col3 = st.columns([1.5, 5, 1.5])
         with col1:
             if st.button("⬅️ Previous Stock", use_container_width=True, disabled=(st.session_state.current_stock_index == 0)):
                 st.session_state.current_stock_index -= 1; st.rerun()
         with col2:
-            st.markdown(f"<p style='text-align: center; font-size: 1.1em;'>Displaying <b>{st.session_state.current_stock_index + 1}</b> of <b>{len(st.session_state.ticker_list)}</b> stocks</p>", unsafe_allow_html=True)
+            st.markdown(f"<p style='text-align: center; font-size: 1.1em;'>Displaying <b>{st.session_state.current_stock_index + 1}</b> of <b>{len(st.session_state.ticker_list)}</b> stocks in <b>{st.session_state.selected_industry}</b></p>", unsafe_allow_html=True)
         with col3:
             if st.button("Next Stock ➡️", use_container_width=True, disabled=(st.session_state.current_stock_index >= len(st.session_state.ticker_list) - 1)):
                 st.session_state.current_stock_index += 1; st.rerun()
 
+        # Display the detailed analysis
         display_stock_analysis(current_ticker)
     else:
-        st.info("Select an industry from the sidebar and click the 'Analyze' button to begin.")
+        st.info("Select an industry from the sidebar and click the 'Analyze Selection' button to view the stock list and detailed analysis.")
