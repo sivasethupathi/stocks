@@ -9,6 +9,5 @@ openai
 plotly
 openpyxl
 requests
-pandas
 python-docx
 beautifulsoup4
