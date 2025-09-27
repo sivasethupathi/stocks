@@ -22,7 +22,7 @@ st.markdown("Select an industry from your Excel file to get a consolidated analy
 
 # --- API KEY CONFIGURATION ---
 # IMPORTANT: Replace the placeholder below with your actual NewsAPI.org API Key
-NEWSAPI_KEY = "REPLACE_WITH_YOUR_NEWSAPI_KEY"
+NEWSAPI_KEY = "517d56d684f04f0bba8a65bcc478727c"
 
 # ======================================================================================
 # DATA FETCHING & CALCULATION FUNCTIONS
@@ -274,28 +274,29 @@ def display_stock_analysis(ticker):
         avg_52_day_display = f"₹{avg_52_day:,.2f}" if avg_52_day is not None else "N/A"
         
         # Determine delta (color) based on comparison with Current Price
-        # Red if Current Price > Avg (User request: show percentage in red)
-        # Green if Current Price < Avg (User request: show absolute diff in green)
         avg_delta_color = "off" # Default gray
         avg_delta_text = "N/A"
 
         if avg_52_day is not None and avg_52_day != 0:
+            price_diff_abs = abs(current_price - avg_52_day)
+            price_diff_percent = ((current_price - avg_52_day) / avg_52_day) * 100
+            
             if current_price > avg_52_day:
-                # Current price is ABOVE 52D Avg -> Show RED percentage (User Request)
-                price_diff_percent = ((current_price - avg_52_day) / avg_52_day) * 100
-                avg_delta_color = "inverse" # Red
-                avg_delta_text = f"+{price_diff_percent:,.2f}% Above Avg"
+                # Current price is ABOVE 52D Avg -> Show RED percentage AND absolute diff (User Request)
+                # Color: Red (inverse)
+                avg_delta_color = "inverse" 
+                avg_delta_text = f"↑ {price_diff_percent:,.2f}% (+₹{price_diff_abs:,.2f})"
             elif current_price < avg_52_day:
-                # Current price is BELOW 52D Avg -> Show GREEN absolute diff (User Request)
-                price_diff_abs = avg_52_day - current_price
-                avg_delta_color = "normal" # Green
-                avg_delta_text = f"-₹{price_diff_abs:,.2f} Below Avg"
+                # Current price is BELOW 52D Avg -> Show GREEN absolute diff AND percentage (User Request)
+                # Color: Green (normal)
+                avg_delta_color = "normal" 
+                avg_delta_text = f"↓ -₹{price_diff_abs:,.2f} ({price_diff_percent:,.2f}%)"
             else:
                 avg_delta_text = "At 52D Avg"
         elif avg_52_day == 0:
             avg_delta_text = "Avg Price is Zero"
 
-        # --- Swing Signal Text Color Enhancement ---
+        # --- Swing Signal Text Color Enhancement (Reduced Font Size) ---
         def get_signal_style(signal):
             if 'Buy' in signal:
                 return "🟢 <span style='color: #2ECC71; font-weight: bold;'>{signal}</span>"
@@ -308,13 +309,14 @@ def display_stock_analysis(ticker):
 
         m_col1, m_col2, m_col3, m_col4, m_col5 = st.columns(5)
         m_col1.metric("Current Price", f"₹{current_price:,.2f}")
-        # Display Swing Signal using markdown for custom color/emoji
+        
+        # FIX 1: Display Swing Signal using markdown with a size similar to other metrics (1.5em)
         m_col2.markdown(f"**Swing Signal**", unsafe_allow_html=True)
-        m_col2.markdown(f"## {styled_signal}", unsafe_allow_html=True)
+        m_col2.markdown(f"<p style='font-size: 1.5em;'>{styled_signal}</p>", unsafe_allow_html=True) 
         
         m_col3.metric("Intrinsic Value", f"₹{intrinsic_value:,.2f}" if intrinsic_value else "N/A")
         
-        # Updated Metric: Last 52 Days Average (with user's custom coloring logic)
+        # FIX 2 & 3: Last 52 Days Average (with combined delta text for absolute and percent)
         m_col4.metric(label="Last 52 Days Average", value=avg_52_day_display, delta=avg_delta_text, delta_color=avg_delta_color)
         m_col5.metric("Buy Price (≈20W SMA)", f"₹{swing_indicators['20W SMA']:,.2f}" if swing_indicators else "N/A")
         
