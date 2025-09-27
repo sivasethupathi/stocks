@@ -215,7 +215,7 @@ def display_stock_analysis(ticker):
         current_price = history['Close'].iloc[-1]
         
         # Calculate year-to-date or FY move (using 2025-03-28 as the reference point for FY)
-        price_mar_28, date_mar_28 = get_price_on_date(daily_history, '2025-03-28')
+        price_mar_28, date_mar_28 = get_price_on_date(daily_history, '2025-03-27')
         move_fy_percent = None
         fy_delta_text = "N/A"
         if price_mar_28 and current_price:
