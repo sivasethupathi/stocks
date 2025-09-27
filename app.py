@@ -262,8 +262,6 @@ def display_stock_analysis(ticker):
             st.warning(f"Could not fetch price history for **{ticker}**. Skipping.")
             return
 
-        st.header(f"Analysis for: {info.get('shortName', ticker)} ({ticker})", divider='rainbow')
-
         swing_indicators, swing_recommendation, _ = calculate_swing_trade_analysis(history)
         intrinsic_value = calculate_graham_intrinsic_value(info, financials)
         
@@ -306,6 +304,19 @@ def display_stock_analysis(ticker):
                 return "🔴 <span style='color: #E74C3C; font-weight: bold;'>{signal}</span>"
         
         styled_signal = get_signal_style(swing_recommendation).format(signal=swing_recommendation)
+
+        # --- NEW: Calculate and Format Price Variation for Header ---
+        price_variation_text = ""
+        buy_price = swing_indicators.get('20W SMA') if swing_indicators else None
+        
+        if buy_price is not None:
+            variation = current_price - buy_price
+            sign = "+" if variation >= 0 else ""
+            price_variation_text = f", [{sign}{variation:,.2f} Rs from Recommended Price]"
+            
+        # FIX: Update the header with the calculated price variation
+        st.header(f"Analysis for: {info.get('shortName', ticker)} ({ticker}){price_variation_text}", divider='rainbow')
+
 
         m_col1, m_col2, m_col3, m_col4, m_col5 = st.columns(5)
         m_col1.metric("Current Price", f"₹{current_price:,.2f}")
