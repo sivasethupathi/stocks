@@ -1,10 +1,13 @@
+import requests
+import json
+import time
+from typing import Dict, Any, Optional
 import streamlit as st
 import pandas as pd
 import yfinance as yf
 import numpy as np
 import plotly.graph_objects as go
 import os
-import requests
 from bs4 import BeautifulSoup
 import re
 from ta.trend import MACD
@@ -17,8 +20,18 @@ from ta.volume import OnBalanceVolumeIndicator
 # ======================================================================================
 st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
 
-st.title("Stock Analyzer | NS   T R A D E R")
+st.title("Stock Analyzer | NS   T R A D E R")
 st.markdown("Select an industry from your Excel file to get a consolidated analysis, including financial ratios from **Screener.in** and a detailed **Swing Trading** recommendation with Fibonacci levels.")
+
+# --- NSE Unofficial API Configuration ---
+# These headers mimic a genuine browser request
+NSE_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+}
+NSE_BASE_URL = "https://www.nseindia.com/"
+NSE_SHAREHOLDING_API = "https://www.nseindia.com/api/corporates-shareholding?symbol={symbol}"
 
 # ======================================================================================
 # DATA FETCHING & CALCULATION FUNCTIONS
@@ -67,6 +80,88 @@ def scrape_screener_data(ticker):
         if name and value: data[name] = value
     return data, "Success"
 
+@st.cache_data(ttl=3600)
+def fetch_nse_shareholding(symbol: str) -> Optional[Dict[str, Any]]:
+    """
+    Fetches the latest quarterly FII/DII shareholding pattern for a given NSE company symbol.
+
+    Args:
+        symbol: The NSE ticker symbol of the company (e.g., 'RELIANCE', 'INFY').
+
+    Returns:
+        A dictionary containing the parsed shareholding data, or None on failure.
+    """
+    symbol = symbol.upper()
+
+    try:
+        # Step 1: Establish session and get cookies by hitting the base URL
+        session = requests.Session()
+        # Use NSE_HEADERS defined globally
+        session.get(NSE_BASE_URL, headers=NSE_HEADERS, timeout=10)
+        
+        # Introduce a small delay to respect API limits
+        time.sleep(0.5)
+
+        # Step 2: Fetch the shareholding data using the dedicated API endpoint
+        url = NSE_SHAREHOLDING_API.format(symbol=symbol)
+        
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = session.get(url, headers=NSE_HEADERS, timeout=10)
+                response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
+                
+                if not response.text.strip():
+                     time.sleep(2 ** attempt) # Exponential backoff
+                     continue
+
+                data = response.json()
+                
+                if not data or 'data' not in data:
+                    return None
+
+                # Step 3: Parse and extract the relevant FII/DII data
+                extracted_data = {
+                    "symbol": symbol,
+                    "date": data.get('latest_date', 'N/A'),
+                    "FII_Percentage": "N/A",
+                    "DII_Percentage": "N/A",
+                    "Promoter_Percentage": "N/A",
+                    "Public_Percentage": "N/A"
+                }
+                
+                for item in data['data']:
+                    category = item.get('category')
+                    percent = item.get('value', '0.0') # Shareholding %
+                    
+                    # Institutional Investors usually include FII/FPI and DII/MF
+                    if category and ('FPI' in category or 'FII' in category):
+                        extracted_data['FII_Percentage'] = percent
+                    elif category and ('DII' in category or 'Mutual' in category):
+                        extracted_data['DII_Percentage'] = percent
+                    elif category and 'Promoter' in category:
+                        extracted_data['Promoter_Percentage'] = percent
+                    elif category and 'Public' in category:
+                        extracted_data['Public_Percentage'] = percent
+                        
+                return extracted_data
+
+            except requests.exceptions.RequestException:
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt) # Exponential backoff
+                else:
+                    return None
+            except json.JSONDecodeError:
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt) # Exponential backoff
+                else:
+                    return None
+                
+        return None # Return None if all retries fail
+
+    except Exception:
+        return None
+
 def calculate_graham_intrinsic_value(info, financials, bond_yield=7.5):
     """Calculates the intrinsic value of a stock using Benjamin Graham's formula."""
     try:
@@ -76,7 +171,7 @@ def calculate_graham_intrinsic_value(info, financials, bond_yield=7.5):
         if net_income.isnull().all() or len(net_income.dropna()) < 2: return None
         growth_rates = net_income.pct_change().dropna()
         avg_growth_rate = np.mean(growth_rates)
-        g = min(avg_growth_rate * 100, 15.0) 
+        g = min(avg_growth_rate * 100, 15.0)  
         if g < 0: g = 0
         return (eps * (8.5 + 2 * g) * 4.4) / bond_yield
     except (KeyError, IndexError, TypeError):
@@ -251,6 +346,27 @@ def display_stock_analysis(ticker):
                 st.dataframe(df_screener, use_container_width=True, hide_index=True)
             else:
                 st.warning(f"Could not scrape data ({screener_status}).")
+            
+            # --- NEW FII/DII SHAREHOLDING SECTION ---
+            st.subheader("FII & DII Shareholding Pattern")
+            
+            # Fetch FII/DII data (Note: This fetches quarterly shareholding % as planned)
+            shareholding_data = fetch_nse_shareholding(ticker)
+            
+            if shareholding_data and shareholding_data.get('FII_Percentage') != 'N/A':
+                data_items = [
+                    ("Latest Filing Date", shareholding_data['date']),
+                    ("Promoter Holding (%)", shareholding_data['Promoter_Percentage']),
+                    ("FII/FPI Holding (%)", shareholding_data['FII_Percentage']),
+                    ("DII/MF Holding (%)", shareholding_data['DII_Percentage']),
+                    ("Public Holding (%)", shareholding_data['Public_Percentage'])
+                ]
+                df_holding = pd.DataFrame(data_items, columns=['Category', 'Percentage'])
+                st.dataframe(df_holding, use_container_width=True, hide_index=True)
+                st.caption("Data represents the **latest quarterly corporate shareholding percentage**, not daily/monthly trade activity.")
+            else:
+                st.info(f"Could not retrieve latest shareholding data for **{ticker}**.")
+
 
     except Exception as e:
         st.error(f"An error occurred while processing **{ticker}**: {e}")
@@ -291,7 +407,7 @@ else:
                 if not buy_signals.empty:
                     for _, row in buy_signals.iterrows(): st.success(f"**{row['Ticker']}**: {row['Signal']}")
                 else: st.info("No strong buy signals found.")
-            
+                
                 st.markdown("**Top 3 Sell Signals**")
                 if not sell_signals.empty:
                     for _, row in sell_signals.iterrows(): st.error(f"**{row['Ticker']}**: {row['Signal']}")
@@ -315,4 +431,3 @@ else:
         display_stock_analysis(current_ticker)
     else:
         st.info("Select an industry from the sidebar and click the 'Analyze' button to begin.")
-
