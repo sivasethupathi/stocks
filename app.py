@@ -432,6 +432,16 @@ else:
                     )
                 else:
                     st.info(f"No valid signal data found for stocks in the {st.session_state.selected_industry} industry.")
+        
+        # --- NEW COPYRIGHT NOTICE (Mild Color, Small Font) ---
+        st.markdown(
+            """
+            <div style='font-size: 0.7rem; color: #a9a9a9; margin-top: 50px; text-align: center; padding-top: 10px; border-top: 1px solid #33333340;'>
+                © 2025 Mock Test Platform, by Sivasethupathi. All Rights Reserved and strictly for internal purpose.
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
 
 
     # --- MAIN CONTENT LAYOUT ---
