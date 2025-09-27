@@ -437,7 +437,7 @@ else:
         st.markdown(
             """
             <div style='font-size: 0.7rem; color: #a9a9a9; margin-top: 50px; text-align: center; padding-top: 10px; border-top: 1px solid #33333340;'>
-                © 2025 Mock Test Platform, by Sivasethupathi. All Rights Reserved and strictly for internal purpose.
+                © 2025 for NS Traders, by Sivasethupathi. All Rights Reserved and strictly for internal purpose.
             </div>
             """, 
             unsafe_allow_html=True
