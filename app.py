@@ -424,16 +424,11 @@ else:
                     st.caption(f"Showing {len(industry_signals)} stocks in this industry.")
 
                     # 5. Apply styling and display the DataFrame
-                    # Removed clickability and adjusted column config for sidebar visibility
+                    # --- REMOVED column_config to ensure all columns auto-size and are fully visible in the sidebar ---
                     st.dataframe(
                         styled_df.style.applymap(color_signals, subset=['Recommendation']),
                         hide_index=True,
                         use_container_width=True,
-                        column_config={
-                            "Rank": st.column_config.Column(width="small"),
-                            "Stock": st.column_config.Column(width="medium"),
-                            "Recommendation": st.column_config.Column(width="large"),
-                        }
                     )
                 else:
                     st.info(f"No valid signal data found for stocks in the {st.session_state.selected_industry} industry.")
