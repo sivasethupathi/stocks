@@ -312,7 +312,7 @@ def display_stock_analysis(ticker):
         if buy_price is not None:
             variation = current_price - buy_price
             sign = "+" if variation >= 0 else ""
-            price_variation_text = f", [{sign}{variation:,.2f} Rs from Recommended Price]"
+            price_variation_text = f", [{sign}{variation:,.2f} Rs]"
             
         # FIX: Update the header with the calculated price variation
         st.header(f"Analysis for: {info.get('shortName', ticker)} ({ticker}){price_variation_text}", divider='rainbow')
