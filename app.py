@@ -22,7 +22,7 @@ st.markdown("Select an industry from your Excel file to get a consolidated analy
 
 # --- API KEY CONFIGURATION ---
 # IMPORTANT: Replace the placeholder below with your actual NewsAPI.org API Key
-NEWSAPI_KEY = "517d56d684f04f0bba8a65bcc478727c"
+NEWSAPI_KEY = "REPLACE_WITH_YOUR_NEWSAPI_KEY"
 
 # ======================================================================================
 # DATA FETCHING & CALCULATION FUNCTIONS
@@ -130,6 +130,16 @@ def calculate_graham_intrinsic_value(info, financials, bond_yield=7.5):
         return (eps * (8.5 + 2 * g) * 4.4) / bond_yield
     except (KeyError, IndexError, TypeError):
         return None
+
+# --- NEW: 52-DAY AVERAGE CALCULATION ---
+def calculate_52_day_average(daily_history):
+    """Calculates the average closing price over the last 52 trading days."""
+    if daily_history.empty or len(daily_history) < 52:
+        return None
+    # Calculate 52-day Simple Moving Average (SMA)
+    # Use a rolling mean on the last 52 data points
+    avg_52 = daily_history['Close'].iloc[-52:].mean()
+    return avg_52
 
 # --- FIBONACCI RETRACEMENT ANALYSIS ---
 def calculate_fibonacci_levels(history):
@@ -259,25 +269,32 @@ def display_stock_analysis(ticker):
         
         current_price = history['Close'].iloc[-1]
         
-        # --- FY MOVE METRIC ---
-        price_mar_28, date_mar_28 = get_price_on_date(daily_history, '2025-03-28') 
-        move_fy_percent = None
-        fy_delta_text = f"FY Start Price (28-Mar-2025) Unavailable" 
-        metric_value_display = "N/A"
+        # --- NEW: 52-DAY AVERAGE METRIC ---
+        avg_52_day = calculate_52_day_average(daily_history)
+        avg_52_day_display = f"₹{avg_52_day:,.2f}" if avg_52_day is not None else "N/A"
         
-        if price_mar_28 is not None and current_price is not None:
-            if price_mar_28 != 0:
-                move_fy_percent = ((current_price - price_mar_28) / price_mar_28) * 100
-                fy_delta_text = f"from ₹{price_mar_28:,.2f} on {date_mar_28.strftime('%d-%b-%Y')}"
-                metric_value_display = f"{move_fy_percent:.2f}%"
+        # Determine delta (color) based on comparison with Current Price
+        avg_delta_color = "off" # Default gray
+        avg_delta_text = "N/A"
+
+        if avg_52_day is not None:
+            if current_price > avg_52_day:
+                # Current price is above the average: signaling strength/buy opportunity (Green)
+                avg_delta_color = "normal" 
+                avg_delta_text = f"Above 52D Avg (+₹{(current_price - avg_52_day):,.2f})"
+            elif current_price < avg_52_day:
+                # Current price is below the average: signaling weakness/avoid (Red)
+                avg_delta_color = "inverse"
+                avg_delta_text = f"Below 52D Avg (-₹{(avg_52_day - current_price):,.2f})"
             else:
-                 fy_delta_text = "Base Price is Zero"
+                avg_delta_text = "At 52D Avg"
 
         m_col1, m_col2, m_col3, m_col4, m_col5 = st.columns(5)
         m_col1.metric("Current Price", f"₹{current_price:,.2f}")
         m_col2.metric("Swing Signal", swing_recommendation)
         m_col3.metric("Intrinsic Value", f"₹{intrinsic_value:,.2f}" if intrinsic_value else "N/A")
-        m_col4.metric(label="Move within FY", value=metric_value_display, delta=fy_delta_text)
+        # Updated Metric: Last 52 Days Average
+        m_col4.metric(label="Last 52 Days Average", value=avg_52_day_display, delta=avg_delta_text, delta_color=avg_delta_color)
         m_col5.metric("Buy Price (≈20W SMA)", f"₹{swing_indicators['20W SMA']:,.2f}" if swing_indicators else "N/A")
         
         st.divider()
