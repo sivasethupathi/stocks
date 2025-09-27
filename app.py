@@ -17,7 +17,7 @@ from ta.volume import OnBalanceVolumeIndicator
 # ======================================================================================
 st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
 
-st.title("Stock Analyzer | NS   T R A D E R")
+st.title("Stock Analyzer | NS    T R A D E R")
 st.markdown("Select an industry from your Excel file to get a consolidated analysis, including financial ratios from **Screener.in** and a detailed **Swing Trading** recommendation with Fibonacci levels.")
 
 # ======================================================================================
@@ -82,7 +82,7 @@ def calculate_graham_intrinsic_value(info, financials, bond_yield=7.5):
     except (KeyError, IndexError, TypeError):
         return None
 
-# --- NEW: FIBONACCI RETRACEMENT ANALYSIS ---
+# --- FIBONACCI RETRACEMENT ANALYSIS ---
 def calculate_fibonacci_levels(history):
     """Calculates Fibonacci retracement levels and provides a signal."""
     lookback_period = history.tail(52) # Look at the last 52 weeks (1 year)
@@ -168,21 +168,32 @@ def calculate_swing_trade_analysis(history):
 
 @st.cache_data(ttl=3600)
 def calculate_quick_signals(df, ticker_col):
-    """Analyzes all stocks to find top buy/sell signals."""
+    """
+    Analyzes all stocks in the DataFrame to find top buy/sell signals.
+    REMOVED THE [:50] CAP.
+    """
     tickers = df[ticker_col].dropna().unique()
+    total_stocks = len(tickers)
     all_signals = []
-    for ticker in tickers[:50]: 
+    
+    # Iterate over ALL available tickers
+    for ticker in tickers: 
         try:
             history, _, _, _ = get_stock_data(ticker)
             if not history.empty and len(history) >= 52:
                 _, recommendation, _ = calculate_swing_trade_analysis(history)
                 all_signals.append({'Ticker': ticker, 'Signal': recommendation})
         except Exception: continue
-    if not all_signals: return pd.DataFrame(), pd.DataFrame()
+    
+    if not all_signals: return pd.DataFrame(), pd.DataFrame(), total_stocks, 0
+    
     signals_df = pd.DataFrame(all_signals)
+    analyzed_stocks = len(signals_df)
+    
     buy_signals = signals_df[signals_df['Signal'].isin(['Strong Buy', 'Buy'])].head(3)
     sell_signals = signals_df[signals_df['Signal'] == 'Sell / Avoid'].head(3)
-    return buy_signals, sell_signals
+    
+    return buy_signals, sell_signals, total_stocks, analyzed_stocks
 
 def display_stock_analysis(ticker):
     """Displays analysis for a single stock."""
@@ -239,7 +250,6 @@ def display_stock_analysis(ticker):
             _, _, swing_reasoning = calculate_swing_trade_analysis(history)
             st.info(swing_reasoning)
 
-            # --- NEW: Fibonacci section ---
             st.subheader("Fibonacci Retracement Analysis")
             _, fib_signal, _, _, _ = calculate_fibonacci_levels(history)
             st.info(fib_signal)
@@ -254,8 +264,11 @@ def display_stock_analysis(ticker):
 
     except Exception as e:
         st.error(f"An error occurred while processing **{ticker}**: {e}")
-# NEW LINE ADDED HERE:
+        
+    # LINE ADDED: NSE Website Link
     st.markdown(f"**🔗 External Link:** [View {ticker} on NSE India](https://www.nseindia.com/get-quotes/equity?symbol={ticker})")
+
+
 # ======================================================================================
 # STREAMLIT UI & LOGIC
 # ======================================================================================
@@ -284,15 +297,17 @@ else:
                 st.session_state.quick_signals_calculated = True
                 
             if st.session_state.quick_signals_calculated:
-                with st.spinner("Calculating market snapshot..."):
-                    buy_signals, sell_signals = calculate_quick_signals(df_full, TICKER_COLUMN_NAME)
+                with st.spinner("Calculating market snapshot across all stocks..."):
+                    buy_signals, sell_signals, total_stocks, analyzed_stocks = calculate_quick_signals(df_full, TICKER_COLUMN_NAME)
                 
                 st.subheader("Quick Signals Snapshot", divider='rainbow')
+                st.markdown(f"**Analyzed {analyzed_stocks} out of {total_stocks} stocks.**") # Display analysis count
+                
                 st.markdown("**Top 3 Buy Signals**")
                 if not buy_signals.empty:
                     for _, row in buy_signals.iterrows(): st.success(f"**{row['Ticker']}**: {row['Signal']}")
                 else: st.info("No strong buy signals found.")
-            
+                
                 st.markdown("**Top 3 Sell Signals**")
                 if not sell_signals.empty:
                     for _, row in sell_signals.iterrows(): st.error(f"**{row['Ticker']}**: {row['Signal']}")
