@@ -1,433 +1,282 @@
 import requests
 import json
-import time
-from typing import Dict, Any, Optional
-import streamlit as st
 import pandas as pd
-import yfinance as yf
-import numpy as np
-import plotly.graph_objects as go
-import os
+from docx import Document
+from docx.shared import Inches, Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.style import WD_STYLE_TYPE
 from bs4 import BeautifulSoup
 import re
-from ta.trend import MACD
-from ta.momentum import RSIIndicator
-from ta.volatility import BollingerBands, AverageTrueRange
-from ta.volume import OnBalanceVolumeIndicator
+import time
+from typing import Dict, Any, List
 
-# ======================================================================================
-# CONFIGURATION & HEADER
-# ======================================================================================
-st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
+# --- Configuration ---
+TICKER = "INFY"
+ISIN = "INE009A01021"
+OUTPUT_FILENAME = f"{TICKER}_Stock_Report.docx"
+NSE_BASE_URL = "https://www.nseindia.com/"
+# NSE API endpoint for current equity data
+NSE_QUOTE_API = f"https://www.nseindia.com/api/quote-equity?symbol={TICKER}"
+# NSE API endpoint for quarterly financial results
+NSE_FINANCIAL_API = f"https://www.nseindia.com/api/corporates-financial-results?symbol={TICKER}&index=equities&period=Quarterly"
+# Cogencis URL (The second URL provided)
+COGENCIS_OWNERSHIP_URL = f"https://iinvest.cogencis.com/{ISIN}/symbol/ns/{TICKER}/Infosys%20Limited?tab=ownership-data&type=capital-history"
 
-st.title("Stock Analyzer | NS   T R A D E R")
-st.markdown("Select an industry from your Excel file to get a consolidated analysis, including financial ratios from **Screener.in** and a detailed **Swing Trading** recommendation with Fibonacci levels.")
-
-# --- NSE Unofficial API Configuration ---
-# These headers mimic a genuine browser request
-NSE_HEADERS = {
+# Headers to mimic a browser, essential for accessing NSE APIs
+HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     'Accept-Language': 'en-US,en;q=0.9',
     'Accept-Encoding': 'gzip, deflate, br',
 }
-NSE_BASE_URL = "https://www.nseindia.com/"
-NSE_SHAREHOLDING_API = "https://www.nseindia.com/api/corporates-shareholding?symbol={symbol}"
 
-# ======================================================================================
-# DATA FETCHING & CALCULATION FUNCTIONS
-# ======================================================================================
-
-@st.cache_data(ttl=3600) # Cache data for 1 hour
-def get_stock_data(ticker):
-    """Fetches all necessary data for a stock from yfinance."""
-    stock = yf.Ticker(f"{ticker}.NS")
-    history_weekly = stock.history(period="3y", interval="1wk")
-    history_daily = stock.history(period="2y", interval="1d")
-    info = stock.info
-    financials = stock.financials
-    return history_weekly, info, financials, history_daily
-
-@st.cache_data(ttl=3600)
-def get_price_on_date(daily_history, target_date_str):
-    """Finds the closest closing price and the actual date to a target date from daily history."""
+def create_nse_session() -> requests.Session:
+    """Creates a session and fetches initial cookies needed for NSE API access."""
+    session = requests.Session()
     try:
-        target_date = pd.to_datetime(target_date_str)
-        closest_date_index = daily_history.index.get_indexer([target_date], method='nearest')[0]
-        actual_date = daily_history.index[closest_date_index]
-        price = daily_history.iloc[closest_date_index]['Close']
-        return price, actual_date
-    except Exception:
-        return None, None
+        session.get(NSE_BASE_URL, headers=HEADERS, timeout=10)
+        return session
+    except requests.RequestException as e:
+        print(f"Error establishing session with NSE: {e}")
+        return None
 
-@st.cache_data(ttl=3600)
-def scrape_screener_data(ticker):
-    """Scrapes key financial data for a given ticker from screener.in."""
-    url = f"https://www.screener.in/company/{ticker}/consolidated/"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-    except requests.RequestException:
-        return None, "Failed to load page"
-    
-    soup = BeautifulSoup(response.content, 'html.parser')
+def fetch_nse_quote_data(session: requests.Session) -> Dict[str, Any]:
+    """
+    Fetches the main stock quote data from the NSE API.
+    Required: Total Traded Volume, Total Traded Value, Adjusted P/E.
+    """
     data = {}
-    ratio_list = soup.select_one('#top-ratios')
-    if not ratio_list: return None, "Ratios not found"
-    for li in ratio_list.find_all('li'):
-        name = li.select_one('.name').get_text(strip=True) if li.select_one('.name') else ''
-        value = li.select_one('.nowrap.value .number').get_text(strip=True) if li.select_one('.nowrap.value .number') else ''
-        if name and value: data[name] = value
-    return data, "Success"
-
-@st.cache_data(ttl=3600)
-def fetch_nse_shareholding(symbol: str) -> Optional[Dict[str, Any]]:
-    """
-    Fetches the latest quarterly FII/DII shareholding pattern for a given NSE company symbol.
-
-    Args:
-        symbol: The NSE ticker symbol of the company (e.g., 'RELIANCE', 'INFY').
-
-    Returns:
-        A dictionary containing the parsed shareholding data, or None on failure.
-    """
-    symbol = symbol.upper()
-
+    print(f"Fetching live quote data for {TICKER}...")
     try:
-        # Step 1: Establish session and get cookies by hitting the base URL
-        session = requests.Session()
-        # Use NSE_HEADERS defined globally
-        session.get(NSE_BASE_URL, headers=NSE_HEADERS, timeout=10)
+        response = session.get(NSE_QUOTE_API, headers=HEADERS, timeout=10)
+        response.raise_for_status()
+        quote_data = response.json()
         
-        # Introduce a small delay to respect API limits
-        time.sleep(0.5)
+        # Extract required metrics from the complex JSON structure
+        data['Latest Price Data'] = {
+            'Company Name': quote_data.get('info', {}).get('companyName', 'N/A'),
+            'Latest Trade Date': quote_data.get('metadata', {}).get('lastUpdateTime', 'N/A'),
+            'Adjusted P/E (TTM)': quote_data.get('preOpenMarket', {}).get('finalPrice', {}).get('pE', 'N/A'),
+            'Total Traded Volume': quote_data.get('totalTradedVolume', 'N/A'),
+            'Total Traded Value (Cr)': round(quote_data.get('totalTradedValue', 0) / 10000000, 2)
+        }
+    except requests.RequestException as e:
+        print(f"Failed to fetch NSE quote data: {e}")
+    except json.JSONDecodeError:
+        print("Failed to decode NSE quote JSON. Request may have been blocked.")
+    
+    return data
 
-        # Step 2: Fetch the shareholding data using the dedicated API endpoint
-        url = NSE_SHAREHOLDING_API.format(symbol=symbol)
+def fetch_nse_financial_data(session: requests.Session) -> pd.DataFrame:
+    """
+    Fetches quarterly financial results from NSE API.
+    Required: Total Income, Total Expenses, Total Tax Expenses.
+    """
+    df = pd.DataFrame()
+    print(f"Fetching quarterly financial data for {TICKER}...")
+    
+    # Introduce small delay
+    time.sleep(1)
+    
+    try:
+        response = session.get(NSE_FINANCIAL_API, headers=HEADERS, timeout=10)
+        response.raise_for_status()
+        financial_data = response.json()
         
-        max_retries = 3
-        for attempt in range(max_retries):
+        if 'data' in financial_data:
+            # Create a list of dictionaries for the DataFrame
+            results = []
+            
+            for item in financial_data['data']:
+                # The data structure may be complex, we look for key items like Income, Expense, Tax
+                # The values are often in Lakhs or Crores; we assume they are large numbers
+                income = item.get('totalIncome', 0)
+                expenses = item.get('totalExpenses', 0)
+                tax = item.get('taxExpense', 0)
+                
+                # Check for zero values, they might indicate the data is not in the expected field
+                if income > 0 and expenses > 0:
+                    results.append({
+                        'Quarter Ended': item.get('period'),
+                        'Total Income (Cr)': round(income / 100, 2), # Assuming data is in Lakhs (1 Cr = 100 Lakhs)
+                        'Total Expenses (Cr)': round(expenses / 100, 2), 
+                        'Total Tax Expense (Cr)': round(tax / 100, 2)
+                    })
+            
+            # Use the latest 4 quarters for a concise view
+            df = pd.DataFrame(results).head(4)
+            # Reorder columns and sort by date
+            if not df.empty:
+                df = df.set_index('Quarter Ended').T
+            
+    except requests.RequestException as e:
+        print(f"Failed to fetch NSE financial data: {e}")
+    except json.JSONDecodeError:
+        print("Failed to decode NSE financial JSON. Request may have been blocked.")
+        
+    return df
+
+def fetch_cogencis_ownership_data() -> Dict[str, pd.DataFrame]:
+    """
+    Scrapes all tables from the Cogencis ownership data page.
+    """
+    scraped_data = {}
+    print(f"Fetching ownership data from Cogencis...")
+    
+    # Introduce small delay
+    time.sleep(2)
+    
+    try:
+        response = requests.get(COGENCIS_OWNERSHIP_URL, headers=HEADERS, timeout=15)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Look for all tables on the page
+        tables = soup.find_all('table')
+        
+        if not tables:
+            scraped_data['Error'] = "No tables found on the Cogencis ownership page. Data is likely loaded dynamically."
+            return scraped_data
+            
+        # Iterate over all found tables
+        for i, table in enumerate(tables):
+            # Use Pandas to read the table HTML into a DataFrame
+            # This is the fastest way to get tabular data from BeautifulSoup object
             try:
-                response = session.get(url, headers=NSE_HEADERS, timeout=10)
-                response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
-                
-                if not response.text.strip():
-                     time.sleep(2 ** attempt) # Exponential backoff
-                     continue
-
-                data = response.json()
-                
-                if not data or 'data' not in data:
-                    return None
-
-                # Step 3: Parse and extract the relevant FII/DII data
-                extracted_data = {
-                    "symbol": symbol,
-                    "date": data.get('latest_date', 'N/A'),
-                    "FII_Percentage": "N/A",
-                    "DII_Percentage": "N/A",
-                    "Promoter_Percentage": "N/A",
-                    "Public_Percentage": "N/A"
-                }
-                
-                for item in data['data']:
-                    category = item.get('category')
-                    percent = item.get('value', '0.0') # Shareholding %
+                # pandas.read_html returns a list of DataFrames; we assume one table per element
+                df_list = pd.read_html(str(table))
+                if df_list:
+                    df = df_list[0]
+                    # Attempt to find a suitable header/title near the table
+                    title_tag = table.find_previous(['h1', 'h2', 'h3', 'h4', 'p'])
+                    table_title = title_tag.text.strip() if title_tag and len(title_tag.text.strip()) > 5 else f"Ownership Table {i+1}"
                     
-                    # Institutional Investors usually include FII/FPI and DII/MF
-                    if category and ('FPI' in category or 'FII' in category):
-                        extracted_data['FII_Percentage'] = percent
-                    elif category and ('DII' in category or 'Mutual' in category):
-                        extracted_data['DII_Percentage'] = percent
-                    elif category and 'Promoter' in category:
-                        extracted_data['Promoter_Percentage'] = percent
-                    elif category and 'Public' in category:
-                        extracted_data['Public_Percentage'] = percent
-                        
-                return extracted_data
+                    # Store only non-empty DataFrames
+                    if not df.empty:
+                        # Clean up multi-index headers that sometimes result from scraping
+                        if isinstance(df.columns, pd.MultiIndex):
+                            df.columns = [' '.join(col).strip() for col in df.columns.values]
+                        scraped_data[table_title] = df
+            except Exception as e:
+                # print(f"Could not parse table {i+1}: {e}")
+                continue # Skip tables that fail to parse
 
-            except requests.exceptions.RequestException:
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt) # Exponential backoff
-                else:
-                    return None
-            except json.JSONDecodeError:
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt) # Exponential backoff
-                else:
-                    return None
-                
-        return None # Return None if all retries fail
+        if not scraped_data:
+            scraped_data['Error'] = "Scraping failed to extract any meaningful tables from Cogencis."
 
-    except Exception:
-        return None
-
-def calculate_graham_intrinsic_value(info, financials, bond_yield=7.5):
-    """Calculates the intrinsic value of a stock using Benjamin Graham's formula."""
-    try:
-        eps = info.get('trailingEps')
-        if not eps or eps <= 0: return None
-        net_income = financials.loc['Net Income']
-        if net_income.isnull().all() or len(net_income.dropna()) < 2: return None
-        growth_rates = net_income.pct_change().dropna()
-        avg_growth_rate = np.mean(growth_rates)
-        g = min(avg_growth_rate * 100, 15.0)  
-        if g < 0: g = 0
-        return (eps * (8.5 + 2 * g) * 4.4) / bond_yield
-    except (KeyError, IndexError, TypeError):
-        return None
-
-# --- NEW: FIBONACCI RETRACEMENT ANALYSIS ---
-def calculate_fibonacci_levels(history):
-    """Calculates Fibonacci retracement levels and provides a signal."""
-    lookback_period = history.tail(52) # Look at the last 52 weeks (1 year)
-    high_price = lookback_period['High'].max()
-    low_price = lookback_period['Low'].min()
-    price_range = high_price - low_price
-    current_price = history['Close'].iloc[-1]
-
-    # Determine trend
-    is_uptrend = current_price > lookback_period['Close'].iloc[0]
-
-    levels = {}
-    if is_uptrend:
-        levels['23.6%'] = high_price - (price_range * 0.236)
-        levels['38.2%'] = high_price - (price_range * 0.382)
-        levels['50.0%'] = high_price - (price_range * 0.500)
-        levels['61.8%'] = high_price - (price_range * 0.618)
-    else: # Downtrend
-        levels['23.6%'] = low_price + (price_range * 0.236)
-        levels['38.2%'] = low_price + (price_range * 0.382)
-        levels['50.0%'] = low_price + (price_range * 0.500)
-        levels['61.8%'] = low_price + (price_range * 0.618)
-    
-    # Generate signal
-    signal = "Neutral"
-    if is_uptrend:
-        if current_price > levels['38.2%'] and current_price < high_price:
-            signal = f"Finding support above the 38.2% level (₹{levels['38.2%']:.2f}). Potential continuation of uptrend."
-        elif current_price <= levels['61.8%']:
-            signal = "Trend weakening, has broken below the 61.8% support."
-    else: # Downtrend
-        if current_price < levels['61.8%'] and current_price > low_price:
-            signal = f"Facing resistance below the 61.8% level (₹{levels['61.8%']:.2f}). Potential continuation of downtrend."
-        elif current_price >= levels['61.8%']:
-            signal = "Potential trend reversal, has broken above the 61.8% resistance."
-            
-    return levels, signal, is_uptrend, high_price, low_price
-
-def calculate_swing_trade_analysis(history):
-    """Calculates swing trading indicators and generates a recommendation."""
-    if len(history) < 52:
-        return None, "Insufficient Data", "Not enough weekly data for full analysis."
-
-    close = history['Close']
-    price = close.iloc[-1]
-    
-    sma_20 = close.rolling(window=20).mean().iloc[-1]
-    sma_50 = close.rolling(window=50).mean().iloc[-1]
-    rsi_14 = RSIIndicator(close, window=14).rsi().iloc[-1]
-    macd_indicator = MACD(close, window_slow=26, window_fast=12, window_sign=9)
-    macd_line = macd_indicator.macd().iloc[-1]
-    macd_signal = macd_indicator.macd_signal().iloc[-1]
-    macd_hist = macd_indicator.macd_diff().iloc[-1]
-    bb_indicator = BollingerBands(close, window=20, window_dev=2)
-    bb_high = bb_indicator.bollinger_hband().iloc[-1]
-    bb_low = bb_indicator.bollinger_lband().iloc[-1]
-    obv_indicator = OnBalanceVolumeIndicator(close, history['Volume'])
-    obv_slope = obv_indicator.on_balance_volume().diff().rolling(window=5).mean().iloc[-1]
-    atr_14 = AverageTrueRange(history['High'], history['Low'], close, window=14).average_true_range().iloc[-1]
-
-    indicators = {"20W SMA": sma_20, "50W SMA": sma_50, "RSI (14)": rsi_14, "MACD Line": macd_line, "MACD Signal": macd_signal}
-
-    score = 0
-    reasons = []
-    
-    if price > sma_20: score += 2; reasons.append("✅ Price > 20W SMA (Short-term trend is up).")
-    else: reasons.append("❌ Price < 20W SMA (Short-term trend is down).")
-    if sma_20 > sma_50: score += 2; reasons.append("✅ 20W SMA > 50W SMA (Golden Cross).")
-    else: reasons.append("❌ 20W SMA < 50W SMA (Death Cross).")
-    if macd_line > macd_signal: score += 1; reasons.append("✅ MACD > Signal (Bullish momentum).")
-    else: reasons.append("❌ MACD < Signal (Bearish momentum).")
-    if 45 < rsi_14 < 68: score += 2; reasons.append(f"✅ RSI is healthy at {rsi_14:.1f}.")
-    else: reasons.append(f"⚠️ RSI is {rsi_14:.1f} (Not in optimal range).")
-    if obv_slope > 0: score += 2; reasons.append("✅ OBV trend is positive (Volume confirms trend).")
-    else: reasons.append("❌ OBV trend is negative (Volume does not confirm).")
-    
-    if score >= 7: recommendation = "Strong Buy"
-    elif score >= 5: recommendation = "Buy"
-    elif score >= 3: recommendation = "Hold / Monitor"
-    else: recommendation = "Sell / Avoid"
+    except requests.RequestException as e:
+        scraped_data['Error'] = f"Failed to fetch Cogencis data: {e}"
         
-    return indicators, recommendation, "\n\n".join(reasons)
+    return scraped_data
 
-@st.cache_data(ttl=3600)
-def calculate_quick_signals(df, ticker_col):
-    """Analyzes all stocks to find top buy/sell signals."""
-    tickers = df[ticker_col].dropna().unique()
-    all_signals = []
-    for ticker in tickers[:50]: 
-        try:
-            history, _, _, _ = get_stock_data(ticker)
-            if not history.empty and len(history) >= 52:
-                _, recommendation, _ = calculate_swing_trade_analysis(history)
-                all_signals.append({'Ticker': ticker, 'Signal': recommendation})
-        except Exception: continue
-    if not all_signals: return pd.DataFrame(), pd.DataFrame()
-    signals_df = pd.DataFrame(all_signals)
-    buy_signals = signals_df[signals_df['Signal'].isin(['Strong Buy', 'Buy'])].head(3)
-    sell_signals = signals_df[signals_df['Signal'] == 'Sell / Avoid'].head(3)
-    return buy_signals, sell_signals
+def generate_word_document(
+    quote_data: Dict[str, Any], 
+    financial_data: pd.DataFrame, 
+    ownership_data: Dict[str, pd.DataFrame], 
+    filename: str
+):
+    """Generates a professional Word document with all collected data."""
+    document = Document()
+    
+    # Set document title style
+    style = document.styles['Normal']
+    font = style.font
+    font.name = 'Arial'
+    font.size = Pt(11)
 
-def display_stock_analysis(ticker):
-    """Displays analysis for a single stock."""
-    try:
-        history, info, financials, daily_history = get_stock_data(ticker)
-        if history.empty:
-            st.warning(f"Could not fetch price history for **{ticker}**. Skipping.")
-            return
+    # Main Title
+    document.add_heading(f"Comprehensive Stock Analysis Report: {TICKER}", 0)
+    document.add_paragraph(f"Report Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    document.add_paragraph(f"NSE Symbol: {TICKER} | ISIN: {ISIN}").add_run().bold = True
+    document.add_paragraph("---")
 
-        st.header(f"Analysis for: {info.get('shortName', ticker)} ({ticker})", divider='rainbow')
-
-        swing_indicators, swing_recommendation, _ = calculate_swing_trade_analysis(history)
-        intrinsic_value = calculate_graham_intrinsic_value(info, financials)
+    # --- Section 1: NSE Live Quote and Valuation Data ---
+    document.add_heading("1. Live Market and Valuation Metrics (NSE)", level=1)
+    if 'Latest Price Data' in quote_data:
+        data = quote_data['Latest Price Data']
         
-        current_price = history['Close'].iloc[-1]
-        price_mar_28, date_mar_28 = get_price_on_date(daily_history, '2025-03-28')
-        move_fy_percent = None
-        fy_delta_text = "N/A"
-        if price_mar_28 and current_price:
-            move_fy_percent = ((current_price - price_mar_28) / price_mar_28) * 100
-            fy_delta_text = f"from ₹{price_mar_28:,.2f} on {date_mar_28.strftime('%d-%b-%Y')}"
-
-        m_col1, m_col2, m_col3, m_col4, m_col5 = st.columns(5)
-        m_col1.metric("Current Price", f"₹{current_price:,.2f}")
-        m_col2.metric("Swing Signal", swing_recommendation)
-        m_col3.metric("Intrinsic Value", f"₹{intrinsic_value:,.2f}" if intrinsic_value else "N/A")
-        m_col4.metric(label="Move within FY", value=f"{move_fy_percent:.2f}%" if move_fy_percent is not None else "N/A", delta=fy_delta_text)
-        m_col5.metric("Buy Price (≈20W SMA)", f"₹{swing_indicators['20W SMA']:,.2f}" if swing_indicators else "N/A")
-
-        st.divider()
-
-        chart_col, analysis_col = st.columns([2, 1])
-
-        with chart_col:
-            st.subheader("Weekly Price Chart with Fibonacci Retracement")
-            fib_levels, _, is_uptrend, high_price, low_price = calculate_fibonacci_levels(history)
-            
-            fig = go.Figure(data=[go.Candlestick(x=history.index, open=history['Open'], high=history['High'], low=history['Low'], close=history['Close'], name='Price')])
-            history['SMA_20W'] = history['Close'].rolling(window=20).mean()
-            history['SMA_50W'] = history['Close'].rolling(window=50).mean()
-            fig.add_trace(go.Scatter(x=history.index, y=history['SMA_20W'], mode='lines', name='20W SMA', line=dict(color='orange', width=1.5)))
-            fig.add_trace(go.Scatter(x=history.index, y=history['SMA_50W'], mode='lines', name='50W SMA', line=dict(color='purple', width=1.5)))
-            
-            # Add Fibonacci lines to chart
-            colors = ['red', 'orange', 'yellow', 'green']
-            for i, (level, price) in enumerate(fib_levels.items()):
-                fig.add_hline(y=price, line_width=1, line_dash="dash", line_color=colors[i], annotation_text=f"Fib {level}", annotation_position="bottom right")
-
-            fig.update_layout(height=600, yaxis_title='Price (INR)', xaxis_rangeslider_visible=False, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with analysis_col:
-            st.subheader("Swing Signal Reasoning")
-            _, _, swing_reasoning = calculate_swing_trade_analysis(history)
-            st.info(swing_reasoning)
-
-            # --- NEW: Fibonacci section ---
-            st.subheader("Fibonacci Retracement Analysis")
-            _, fib_signal, _, _, _ = calculate_fibonacci_levels(history)
-            st.info(fib_signal)
-
-            st.subheader("Key Financial Ratios")
-            screener_data, screener_status = scrape_screener_data(ticker)
-            if screener_status == "Success":
-                df_screener = pd.DataFrame(screener_data.items(), columns=['Ratio', 'Value'])
-                st.dataframe(df_screener, use_container_width=True, hide_index=True)
-            else:
-                st.warning(f"Could not scrape data ({screener_status}).")
-            
-            # --- NEW FII/DII SHAREHOLDING SECTION ---
-            st.subheader("FII & DII Shareholding Pattern")
-            
-            # Fetch FII/DII data (Note: This fetches quarterly shareholding % as planned)
-            shareholding_data = fetch_nse_shareholding(ticker)
-            
-            if shareholding_data and shareholding_data.get('FII_Percentage') != 'N/A':
-                data_items = [
-                    ("Latest Filing Date", shareholding_data['date']),
-                    ("Promoter Holding (%)", shareholding_data['Promoter_Percentage']),
-                    ("FII/FPI Holding (%)", shareholding_data['FII_Percentage']),
-                    ("DII/MF Holding (%)", shareholding_data['DII_Percentage']),
-                    ("Public Holding (%)", shareholding_data['Public_Percentage'])
-                ]
-                df_holding = pd.DataFrame(data_items, columns=['Category', 'Percentage'])
-                st.dataframe(df_holding, use_container_width=True, hide_index=True)
-                st.caption("Data represents the **latest quarterly corporate shareholding percentage**, not daily/monthly trade activity.")
-            else:
-                st.info(f"Could not retrieve latest shareholding data for **{ticker}**.")
-
-
-    except Exception as e:
-        st.error(f"An error occurred while processing **{ticker}**: {e}")
-
-# ======================================================================================
-# STREAMLIT UI & LOGIC
-# ======================================================================================
-EXCEL_FILE_PATH = "SELECTED STOCKS 22FEB2025.xlsx"
-TICKER_COLUMN_NAME = "NSE SYMBOL"
-INDUSTRY_COLUMN_NAME = "INDUSTRY"
-
-if 'current_stock_index' not in st.session_state: st.session_state.current_stock_index = 0
-if 'ticker_list' not in st.session_state: st.session_state.ticker_list = []
-if 'quick_signals_calculated' not in st.session_state: st.session_state.quick_signals_calculated = False
-
-if not os.path.exists(EXCEL_FILE_PATH):
-    st.error(f"Error: The file '{EXCEL_FILE_PATH}' was not found.")
-else:
-    with st.sidebar:
-        st.header("⚙️ Analysis Filter")
-        try:
-            df_full = pd.read_excel(EXCEL_FILE_PATH, sheet_name='Sheet1')
-            industries = ["All Industries"] + sorted(df_full[INDUSTRY_COLUMN_NAME].dropna().unique().tolist())
-            selected_industry = st.selectbox("Select an Industry:", industries)
-            
-            if st.button("🚀 Analyze Selected Industry", type="primary"):
-                df_filtered = df_full[df_full[INDUSTRY_COLUMN_NAME] == selected_industry] if selected_industry != "All Industries" else df_full
-                st.session_state.ticker_list = df_filtered[TICKER_COLUMN_NAME].dropna().unique().tolist()
-                st.session_state.current_stock_index = 0
-                st.session_state.quick_signals_calculated = True
-                
-            if st.session_state.quick_signals_calculated:
-                with st.spinner("Calculating market snapshot..."):
-                    buy_signals, sell_signals = calculate_quick_signals(df_full, TICKER_COLUMN_NAME)
-                
-                st.subheader("Quick Signals Snapshot", divider='rainbow')
-                st.markdown("**Top 3 Buy Signals**")
-                if not buy_signals.empty:
-                    for _, row in buy_signals.iterrows(): st.success(f"**{row['Ticker']}**: {row['Signal']}")
-                else: st.info("No strong buy signals found.")
-                
-                st.markdown("**Top 3 Sell Signals**")
-                if not sell_signals.empty:
-                    for _, row in sell_signals.iterrows(): st.error(f"**{row['Ticker']}**: {row['Signal']}")
-                else: st.info("No strong sell signals found.")
-        except Exception as e:
-            st.error(f"Could not read the Excel file. Error: {e}")
-
-    if st.session_state.ticker_list:
-        current_ticker = st.session_state.ticker_list[st.session_state.current_stock_index]
-        
-        col1, col2, col3 = st.columns([1.5, 5, 1.5])
-        with col1:
-            if st.button("⬅️ Previous Stock", use_container_width=True, disabled=(st.session_state.current_stock_index == 0)):
-                st.session_state.current_stock_index -= 1; st.rerun()
-        with col2:
-            st.markdown(f"<p style='text-align: center; font-size: 1.1em;'>Displaying <b>{st.session_state.current_stock_index + 1}</b> of <b>{len(st.session_state.ticker_list)}</b> stocks</p>", unsafe_allow_html=True)
-        with col3:
-            if st.button("Next Stock ➡️", use_container_width=True, disabled=(st.session_state.current_stock_index >= len(st.session_state.ticker_list) - 1)):
-                st.session_state.current_stock_index += 1; st.rerun()
-
-        display_stock_analysis(current_ticker)
+        p = document.add_paragraph()
+        p.add_run(f"Company: {data['Company Name']}\n").bold = True
+        p.add_run(f"Last Updated: {data['Latest Trade Date']}\n")
+        p.add_run(f"Adjusted TTM P/E: {data['Adjusted P/E (TTM)']}\n")
+        p.add_run(f"Total Traded Volume: {data['Total Traded Volume']:,}\n")
+        p.add_run(f"Total Traded Value (Crores): ₹{data['Total Traded Value (Cr)']:,}")
     else:
-        st.info("Select an industry from the sidebar and click the 'Analyze' button to begin.")
+        document.add_paragraph("Live market data could not be retrieved from NSE.")
+
+    # --- Section 2: Quarterly Financial Results (NSE) ---
+    document.add_heading("2. Quarterly Financial Results Comparison (₹ Crores)", level=1)
+    if not financial_data.empty:
+        # Convert DataFrame to Word table
+        t = document.add_table(financial_data.shape[0] + 1, financial_data.shape[1] + 1)
+        t.style = 'Light Shading Accent 1'
+        
+        # Add Header row (Categories)
+        t.cell(0, 0).text = 'Metric'
+        for j, col_name in enumerate(financial_data.columns):
+            t.cell(0, j + 1).text = col_name
+            t.cell(0, j + 1).paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        
+        # Add Data rows
+        for i, (index_name, row) in enumerate(financial_data.iterrows()):
+            t.cell(i + 1, 0).text = index_name
+            for j, value in enumerate(row):
+                t.cell(i + 1, j + 1).text = f"{value:,}"
+                t.cell(i + 1, j + 1).paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    else:
+        document.add_paragraph("Quarterly financial comparison data could not be retrieved from NSE.")
+    
+    # --- Section 3: Cogencis Ownership Data ---
+    document.add_heading(f"3. Ownership and Capital History (Source: Cogencis)", level=1)
+    document.add_paragraph(f"Data scraped from: {COGENCIS_OWNERSHIP_URL}")
+
+    if 'Error' in ownership_data:
+        document.add_paragraph(f"Error scraping Cogencis data: {ownership_data['Error']}")
+    elif ownership_data:
+        for title, df in ownership_data.items():
+            document.add_heading(f"3.{list(ownership_data.keys()).index(title) + 1} {title}", level=2)
+            
+            # Generate table from DataFrame
+            doc_table = document.add_table(df.shape[0] + 1, df.shape[1])
+            doc_table.style = 'Table Grid'
+            
+            # Add Header Row
+            for j, col in enumerate(df.columns):
+                doc_table.cell(0, j).text = str(col)
+                doc_table.cell(0, j).paragraphs[0].runs[0].font.bold = True
+            
+            # Add Data Rows
+            for i in range(df.shape[0]):
+                for j in range(df.shape[1]):
+                    # Convert non-string data to string for docx cell
+                    doc_table.cell(i + 1, j).text = str(df.iloc[i, j])
+    else:
+        document.add_paragraph("No ownership or capital history tables were successfully scraped from Cogencis.")
+        
+    document.save(filename)
+    print(f"\n--- SUCCESS ---")
+    print(f"Report generated successfully: {filename}")
+    print(f"Please open the file for the neatly arranged data.")
+
+# --- Main Execution ---
+if __name__ == "__main__":
+    nse_session = create_nse_session()
+    
+    if nse_session:
+        # 1. Fetch data from NSE Quote API
+        quote_data_result = fetch_nse_quote_data(nse_session)
+        
+        # 2. Fetch quarterly financial data from NSE
+        financial_df = fetch_nse_financial_data(nse_session)
+        
+        # 3. Fetch ownership data from Cogencis
+        ownership_data_result = fetch_cogencis_ownership_data()
+
+        # 4. Generate the Word Document
+        generate_word_document(
+            quote_data_result,
+            financial_df,
+            ownership_data_result,
+            OUTPUT_FILENAME
+        )
+    else:
+        print("Could not initialize the required session to fetch data. Exiting.")
