@@ -20,6 +20,10 @@ st.set_page_config(page_title="Stock Analysis Dashboard", layout="wide")
 st.title("Stock Analyzer | NS    T R A D E R")
 st.markdown("Select an industry from your Excel file to get a consolidated analysis, including financial ratios from **Screener.in** and a detailed **Swing Trading** recommendation with Fibonacci levels.")
 
+# --- API KEY CONFIGURATION ---
+# IMPORTANT: Replace the placeholder below with your actual Finnhub.io API Key
+FINNHUB_API_KEY = "d3c175pr01qu12597k10d3c175pr01qu12597k1g"
+
 # ======================================================================================
 # DATA FETCHING & CALCULATION FUNCTIONS
 # ======================================================================================
@@ -68,6 +72,38 @@ def scrape_screener_data(ticker):
         value = li.select_one('.nowrap.value .number').get_text(strip=True) if li.select_one('.nowrap.value .number') else ''
         if name and value: data[name] = value
     return data, "Success"
+
+@st.cache_data(ttl=3600)
+def get_finnhub_sentiment(ticker):
+    """Fetches social sentiment data (Reddit/Twitter) from Finnhub."""
+    if FINNHUB_API_KEY == "REPLACE_WITH_YOUR_FINNHUB_API_KEY":
+        return {"status": "Error", "message": "Finnhub API key not set. Please update FINNHUB_API_KEY."}
+        
+    # Finnhub requires NS for NSE stocks, but we'll ensure we pass the ticker correctly
+    symbol_finnhub = f"{ticker}.NS" if not ticker.endswith(".NS") else ticker
+    
+    sentiment_url = f'https://finnhub.io/api/v1/news-sentiment?symbol={symbol_finnhub}&token={FINNHUB_API_KEY}'
+    
+    try:
+        resp = requests.get(sentiment_url, timeout=5)
+        resp.raise_for_status()
+        sentiment_data = resp.json()
+        
+        # Extract relevant social sentiment metrics
+        social_data = {
+            # Sentiment scores range from -1 (bearish) to 1 (bullish)
+            "Twitter Score": sentiment_data.get('sentiment', {}).get('twitterSentiment'),
+            "Reddit Score": sentiment_data.get('sentiment', {}).get('redditSentiment'),
+            "Twitter Mentions": sentiment_data.get('socialSentiment', {}).get('twitterMentions', 0),
+            "Reddit Mentions": sentiment_data.get('socialSentiment', {}).get('redditMentions', 0),
+        }
+        return {"status": "Success", "data": social_data}
+
+    except requests.RequestException as e:
+        return {"status": "Error", "message": f"Finnhub API request failed: {e}"}
+    except Exception:
+        return {"status": "Error", "message": "Failed to parse Finnhub sentiment data."}
+
 
 def calculate_graham_intrinsic_value(info, financials, bond_yield=7.5):
     """Calculates the intrinsic value of a stock using Benjamin Graham's formula."""
@@ -212,37 +248,62 @@ def display_stock_analysis(ticker):
         
         current_price = history['Close'].iloc[-1]
         
-        # --- MODIFIED LOGIC FOR FY MOVE METRIC ---
-        # Calculate year-to-date or FY move (using 2025-03-28 as the reference point for FY)
+        # --- FY MOVE METRIC ---
         price_mar_28, date_mar_28 = get_price_on_date(daily_history, '2025-03-28') 
         move_fy_percent = None
-        
-        # Set a default delta text if the price is unavailable (most likely scenario for a future date)
         fy_delta_text = f"FY Start Price (28-Mar-2025) Unavailable" 
         metric_value_display = "N/A"
         
-        # Calculate the price movement and update the delta text
         if price_mar_28 is not None and current_price is not None:
             if price_mar_28 != 0:
                 move_fy_percent = ((current_price - price_mar_28) / price_mar_28) * 100
-                
-                # Update the delta text to explicitly show the base price and date
                 fy_delta_text = f"from ₹{price_mar_28:,.2f} on {date_mar_28.strftime('%d-%b-%Y')}"
                 metric_value_display = f"{move_fy_percent:.2f}%"
             else:
-                 # If price is zero, we can't calculate percentage
                  fy_delta_text = "Base Price is Zero"
 
         m_col1, m_col2, m_col3, m_col4, m_col5 = st.columns(5)
         m_col1.metric("Current Price", f"₹{current_price:,.2f}")
         m_col2.metric("Swing Signal", swing_recommendation)
         m_col3.metric("Intrinsic Value", f"₹{intrinsic_value:,.2f}" if intrinsic_value else "N/A")
-        # Use the derived display values, ensuring the delta text is informative
         m_col4.metric(label="Move within FY", value=metric_value_display, delta=fy_delta_text)
         m_col5.metric("Buy Price (≈20W SMA)", f"₹{swing_indicators['20W SMA']:,.2f}" if swing_indicators else "N/A")
 
+        # ===============================================
+        # NEW: MARKET SENTIMENT DISPLAY
+        # ===============================================
+        st.subheader("Market Sentiment (Finnhub.io)", divider='blue')
+        sentiment_result = get_finnhub_sentiment(ticker)
+        
+        if sentiment_result['status'] == 'Success':
+            data = sentiment_result['data']
+            s_col1, s_col2, s_col3, s_col4 = st.columns(4)
+            
+            # Helper function to format score or display N/A
+            def format_score(score):
+                if isinstance(score, (int, float)):
+                    # Determine delta color for sentiment score
+                    if score > 0.3: delta_color = "normal"  # Bullish
+                    elif score < -0.3: delta_color = "inverse" # Bearish
+                    else: delta_color = "off"
+                    return f"{score:.2f}", delta_color
+                return "N/A", "off"
+
+            twitter_score, tw_color = format_score(data['Twitter Score'])
+            reddit_score, rd_color = format_score(data['Reddit Score'])
+
+            s_col1.metric("Twitter Score", twitter_score, delta="Score (Higher is Bullish)", delta_color=tw_color)
+            s_col2.metric("Reddit Score", reddit_score, delta="Score (Higher is Bullish)", delta_color=rd_color)
+            s_col3.metric("Twitter Mentions (24h)", f"{data['Twitter Mentions']:,}")
+            s_col4.metric("Reddit Mentions (24h)", f"{data['Reddit Mentions']:,}")
+        else:
+            st.warning(sentiment_result['message'])
+        
         st.divider()
 
+        # ===============================================
+        # EXISTING: CHART AND ANALYSIS SECTION
+        # ===============================================
         chart_col, analysis_col = st.columns([2, 1])
 
         with chart_col:
@@ -437,7 +498,7 @@ else:
         st.markdown(
             """
             <div style='font-size: 0.7rem; color: #a9a9a9; margin-top: 50px; text-align: center; padding-top: 10px; border-top: 1px solid #33333340;'>
-                © 2025 for NS Traders, by Sivasethupathi. All Rights Reserved and strictly for internal purpose.
+                © 2025 Mock Test Platform, by Sivasethupathi. All Rights Reserved and strictly for internal purpose.
             </div>
             """, 
             unsafe_allow_html=True
