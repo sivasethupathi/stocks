@@ -11,6 +11,7 @@ from ta.trend import MACD
 from ta.momentum import RSIIndicator
 from ta.volatility import BollingerBands, AverageTrueRange
 from ta.volume import OnBalanceVolumeIndicator
+import io # Import for handling the Excel output
 
 # ======================================================================================
 # CONFIGURATION & HEADER
@@ -224,7 +225,102 @@ def calculate_swing_trade_analysis(history):
         
     return indicators, recommendation, "\n\n".join(reasons)
 
-# --- CACHED FUNCTION TO CALCULATE ALL SIGNALS AND RANKING METRICS ---
+# --- NEW CACHED FUNCTION TO PREPARE EXPORT DATA ---
+@st.cache_data(ttl=3600)
+def prepare_export_data(df_full, ticker_col, company_col):
+    """
+    Collects all required financial and technical metrics for the Excel export.
+    """
+    tickers = df_full[ticker_col].dropna().unique()
+    export_list = []
+    
+    # Create a mapping for company names
+    company_map = df_full.set_index(ticker_col)[company_col].to_dict()
+
+    for ticker in tickers: 
+        try:
+            history_weekly, info, _, history_daily = get_stock_data(ticker)
+            
+            if history_weekly.empty or len(history_weekly) < 52:
+                # Append placeholder data if fetching or history is insufficient
+                export_list.append({
+                    'Ticker': ticker,
+                    'Signal': 'N/A (Data Error)',
+                    'Current_Price': np.nan,
+                    'Intrinsic_Value': np.nan,
+                    'Avg_52_Day': np.nan,
+                    'Buy_Price_20W_SMA': np.nan,
+                    'Market_Cap': np.nan,
+                    'Stock_PE': np.nan,
+                    'RSI_Value': np.nan,
+                })
+                continue
+                
+            # Calculations
+            indicators, recommendation, _ = calculate_swing_trade_analysis(history_weekly)
+            intrinsic_value = calculate_graham_intrinsic_value(info, info, bond_yield=7.5) # info for financials placeholder
+            avg_52_day = calculate_52_day_average(history_daily)
+            
+            # Data extraction
+            current_price = history_weekly['Close'].iloc[-1]
+            buy_price = indicators.get("20W SMA")
+            rsi_value = indicators.get("RSI (14)")
+            market_cap = info.get('marketCap')
+            stock_pe = info.get('trailingPE')
+            
+            export_list.append({
+                'Ticker': ticker,
+                'Signal': recommendation,
+                'Current_Price': current_price,
+                'Intrinsic_Value': intrinsic_value,
+                'Avg_52_Day': avg_52_day,
+                'Buy_Price_20W_SMA': buy_price,
+                'Market_Cap': market_cap,
+                'Stock_PE': stock_pe,
+                'RSI_Value': rsi_value,
+            })
+        except Exception: 
+            export_list.append({'Ticker': ticker, 'Signal': 'N/A (Fetch Error)', 
+                                'Current_Price': np.nan, 'Intrinsic_Value': np.nan, 'Avg_52_Day': np.nan,
+                                'Buy_Price_20W_SMA': np.nan, 'Market_Cap': np.nan, 'Stock_PE': np.nan, 'RSI_Value': np.nan})
+            continue
+            
+    df_export = pd.DataFrame(export_list)
+    
+    # Merge Company Name
+    df_export['Company Name'] = df_export['Ticker'].map(company_map).fillna(df_export['Ticker'])
+    
+    # Final column selection and renaming
+    df_export.insert(0, 'S. No.', range(1, 1 + len(df_export)))
+    df_export = df_export.rename(columns={
+        'Current_Price': 'Current Market Price',
+        'Intrinsic_Value': 'Intrinsic Value',
+        'Avg_52_Day': 'Last 52 Day Avg Price',
+        'Buy_Price_20W_SMA': 'Buy Price (20W SMA)',
+        'Market_Cap': 'Market Cap',
+        'Stock_PE': 'Stock P/E',
+        'RSI_Value': 'RSI Value',
+        'Signal': 'Swing Signal'
+    })
+    
+    # Select and reorder the 10 final columns
+    final_columns = [
+        'S. No.', 'Company Name', 'Current Market Price', 'Intrinsic Value', 
+        'Last 52 Day Avg Price', 'Buy Price (20W SMA)', 'Market Cap', 'Stock P/E', 
+        'RSI Value', 'Swing Signal'
+    ]
+    
+    return df_export[final_columns]
+
+# Helper function to convert DataFrame to Excel bytes
+def to_excel(df):
+    """Converts a pandas DataFrame to an Excel file stored in memory."""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='Stock_Data_Export')
+    return output.getvalue()
+
+
 @st.cache_data(ttl=3600)
 def calculate_all_stock_signals(df, ticker_col):
     """
@@ -238,25 +334,26 @@ def calculate_all_stock_signals(df, ticker_col):
     for ticker in tickers: 
         try:
             history, _, _, _ = get_stock_data(ticker)
-            if not history.empty and len(history) >= 52:
-                indicators, recommendation, _ = calculate_swing_trade_analysis(history)
-                current_price = history['Close'].iloc[-1]
-                buy_price_20w_sma = indicators.get('20W SMA')
-
-                # Calculate the difference: Current Price - Recommended Buy Price (for ranking)
-                price_diff = current_price - buy_price_20w_sma if buy_price_20w_sma is not None else np.nan
-
-                all_signals.append({
-                    'Ticker': ticker, 
-                    'Signal': recommendation,
-                    'Current_Price': current_price,
-                    'Buy_Price_20W_SMA': buy_price_20w_sma,
-                    'Price_Diff': price_diff
-                })
-                analyzed_count += 1
-            else:
-                 # If not enough data, mark as skip
+            if not history.empty and len(history) < 52:
+                # Handle insufficient data cleanly for ranking/signal display
                 all_signals.append({'Ticker': ticker, 'Signal': 'N/A (Data Error)', 'Price_Diff': np.nan})
+                continue
+            
+            indicators, recommendation, _ = calculate_swing_trade_analysis(history)
+            current_price = history['Close'].iloc[-1]
+            buy_price_20w_sma = indicators.get('20W SMA')
+
+            # Calculate the difference: Current Price - Recommended Buy Price (for ranking)
+            price_diff = current_price - buy_price_20w_sma if buy_price_20w_sma is not None else np.nan
+
+            all_signals.append({
+                'Ticker': ticker, 
+                'Signal': recommendation,
+                'Current_Price': current_price,
+                'Buy_Price_20W_SMA': buy_price_20w_sma,
+                'Price_Diff': price_diff
+            })
+            analyzed_count += 1
         except Exception: 
             all_signals.append({'Ticker': ticker, 'Signal': 'N/A (Fetch Error)', 'Price_Diff': np.nan})
             continue
@@ -322,7 +419,7 @@ def display_stock_analysis(ticker):
         if buy_price is not None:
             variation = current_price - buy_price
             sign = "+" if variation >= 0 else ""
-            price_variation_text = f", Rs.{sign}{variation:,.2f} /-"
+            price_variation_text = f", [{sign}{variation:,.2f} Rs from Recommended Price]"
             
         # FIX: Update the header with the calculated price variation
         st.header(f"Analysis for: {info.get('shortName', ticker)} ({ticker}){price_variation_text}", divider='rainbow')
@@ -535,6 +632,11 @@ else:
                     industry_signals.loc[industry_signals['Rank'] == 0, 'Rank'] = '-'
                     industry_signals['Rank'] = industry_signals['Rank'].astype(str)
 
+                    # 3. Format the Price Difference for display (including sign)
+                    industry_signals['Difference'] = industry_signals['Price_Diff'].apply(
+                        lambda x: f"₹{x:,.2f}" if pd.notna(x) else '-'
+                    )
+
                     # Define the styling function for coloring the 'Recommendation' column (Rich Colors)
                     def color_signals(s):
                         if s == 'Strong Buy' or s == 'Buy':
@@ -546,25 +648,71 @@ else:
                         else:
                             return 'background-color: #BDC3C7; color: #383d41;'
 
-                    # Prepare for display
-                    styled_df = industry_signals[['Rank', 'Ticker', 'Signal']].rename(columns={'Ticker': 'Stock', 'Signal': 'Recommendation'})
+                    # Define the styling function for the difference column
+                    def style_difference_cell(val):
+                        if val == '-':
+                            return 'background-color: #BDC3C7; color: #383d41;' # Gray for N/A
+
+                        # Extract the numeric part safely (handling signs and currency)
+                        try:
+                            # Clean the string by removing non-numeric characters except for the leading sign
+                            numeric_str = val.replace('₹', '').replace(',', '').strip()
+                            numeric_val = float(numeric_str)
+                        except ValueError:
+                            return '' # Default style if parsing fails
+
+                        if numeric_val <= 0:
+                            # Negative difference (Good/Neutral Opportunity) -> Green
+                            return 'background-color: #d4edda; color: #155724; font-weight: bold;' 
+                        else:
+                            # Positive difference (Run Up) -> Red
+                            return 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
+
+                    # Prepare for display, including the new 'Difference' column
+                    styled_df = industry_signals[['Rank', 'Ticker', 'Signal', 'Difference']].rename(columns={
+                        'Ticker': 'Stock', 
+                        'Signal': 'Recommendation',
+                        'Difference': 'Diff (Curr - SMA)'
+                    })
                     
                     st.caption(f"Showing {len(industry_signals)} stocks in this industry. Rank based on proximity to 20W SMA.")
 
                     # Apply styling and display the DataFrame
                     st.dataframe(
-                        styled_df.style.applymap(color_signals, subset=['Recommendation']),
+                        styled_df.style
+                            .applymap(color_signals, subset=['Recommendation'])
+                            .applymap(style_difference_cell, subset=['Diff (Curr - SMA)']),
                         hide_index=True,
                         use_container_width=True,
                     )
                 else:
                     st.info(f"No valid signal data found for stocks in the {st.session_state.selected_industry} industry.")
         
-        # --- NEW COPYRIGHT NOTICE (Mild Color, Small Font) ---
+        # --- NEW EXPORT MODULE ---
+        st.markdown("---")
+        st.subheader("Data Export")
+        
+        # Check if df_full is available and proceed to prepare export data
+        if 'df_full' in locals():
+            with st.spinner("Preparing export data..."):
+                df_export_ready = prepare_export_data(df_full, TICKER_COLUMN_NAME, COMPANY_COLUMN_NAME)
+                excel_data = to_excel(df_export_ready)
+
+            st.download_button(
+                label="⬇️ EXPORT All Stock Data to Excel",
+                data=excel_data,
+                file_name=f"Stock_Analysis_Export_{pd.Timestamp('today').strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        else:
+            st.warning("Cannot export data: Excel file not loaded.")
+        
+        # --- COPYRIGHT NOTICE (Mild Color, Small Font) ---
         st.markdown(
             """
             <div style='font-size: 0.7rem; color: #a9a9a9; margin-top: 50px; text-align: center; padding-top: 10px; border-top: 1px solid #33333340;'>
-                © 2025 NS SYSTEMS, by Sivasethupathi. All Rights Reserved and strictly for internal purpose.
+                © 2025 Mock Test Platform, by Sivasethupathi. All Rights Reserved and strictly for internal purpose.
             </div>
             """, 
             unsafe_allow_html=True
