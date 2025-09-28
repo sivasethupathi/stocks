@@ -167,6 +167,54 @@ def calculate_52_day_average(daily_history):
     avg_52 = daily_history['Close'].iloc[-52:].mean()
     return avg_52
 
+# --- FIBONACCI RETRACEMENT ANALYSIS (MODIFIED FOR STABILITY) ---
+def calculate_fibonacci_levels(history):
+    """Calculates Fibonacci retracement levels and provides a signal."""
+    try:
+        lookback_period = history.tail(52) # Look at the last 52 weeks (1 year)
+        high_price = lookback_period['High'].max()
+        low_price = lookback_period['Low'].min()
+        price_range = high_price - low_price
+        current_price = history['Close'].iloc[-1]
+
+        # Defensive check for stagnant price (which could cause instability)
+        if price_range <= 0:
+             return {}, "Price is stagnant or single-day data.", False, high_price, low_price
+        
+        # Determine trend
+        is_uptrend = current_price > lookback_period['Close'].iloc[0]
+
+        levels = {}
+        if is_uptrend:
+            levels['23.6%'] = high_price - (price_range * 0.236)
+            levels['38.2%'] = high_price - (price_range * 0.382)
+            levels['50.0%'] = high_price - (price_range * 0.500)
+            levels['61.8%'] = high_price - (price_range * 0.618)
+        else: # Downtrend
+            levels['23.6%'] = low_price + (price_range * 0.236)
+            levels['38.2%'] = low_price + (price_range * 0.382)
+            levels['50.0%'] = low_price + (price_range * 0.500)
+            levels['61.8%'] = low_price + (price_range * 0.618)
+        
+        # Generate signal
+        signal = "Neutral"
+        if is_uptrend:
+            if current_price > levels['38.2%'] and current_price < high_price:
+                signal = f"Finding support above the 38.2% level (₹{levels['38.2%']:.2f}). Potential continuation of uptrend."
+            elif current_price <= levels['61.8%']:
+                signal = "Trend weakening, has broken below the 61.8% support."
+        else: # Downtrend
+            if current_price < levels['61.8%'] and current_price > low_price:
+                signal = f"Facing resistance below the 61.8% level (₹{levels['61.8%']:.2f}). Potential continuation of downtrend."
+            elif current_price >= levels['61.8%']:
+                signal = "Potential trend reversal, has broken above the 61.8% resistance."
+                
+        return levels, signal, is_uptrend, high_price, low_price
+    except Exception:
+        # Return safe defaults on any calculation error
+        return {}, "Calculation Error", False, np.nan, np.nan
+
+
 def calculate_swing_trade_analysis(history):
     """Calculates swing trading indicators and generates a recommendation."""
     if len(history) < 52:
@@ -425,6 +473,7 @@ def display_stock_analysis(ticker):
 
         with chart_col:
             st.subheader("Weekly Price Chart with Fibonacci Retracement")
+            # This is the line that was throwing the error, now protected by stable function
             fib_levels, _, is_uptrend, high_price, low_price = calculate_fibonacci_levels(history)
             
             # Setup Plotly Candlestick Chart
