@@ -11,3 +11,4 @@ openpyxl
 requests
 python-docx
 beautifulsoup4
+xlsxwriter
