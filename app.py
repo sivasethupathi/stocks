@@ -224,12 +224,11 @@ def calculate_swing_trade_analysis(history):
         
     return indicators, recommendation, "\n\n".join(reasons)
 
-# --- CACHED FUNCTION TO CALCULATE ALL SIGNALS ---
+# --- CACHED FUNCTION TO CALCULATE ALL SIGNALS AND RANKING METRICS ---
 @st.cache_data(ttl=3600)
 def calculate_all_stock_signals(df, ticker_col):
     """
-    Calculates swing signals for ALL available stocks in the DataFrame.
-    Returns the full DataFrame of results, total stocks, and successfully analyzed stocks.
+    Calculates swing signals and necessary ranking metrics (Current Price, 20W SMA) for ALL available stocks.
     """
     tickers = df[ticker_col].dropna().unique()
     total_stocks = len(tickers)
@@ -238,17 +237,28 @@ def calculate_all_stock_signals(df, ticker_col):
     
     for ticker in tickers: 
         try:
-            # get_stock_data is also cached, ensuring efficiency on subsequent runs
             history, _, _, _ = get_stock_data(ticker)
             if not history.empty and len(history) >= 52:
-                _, recommendation, _ = calculate_swing_trade_analysis(history)
-                all_signals.append({'Ticker': ticker, 'Signal': recommendation})
+                indicators, recommendation, _ = calculate_swing_trade_analysis(history)
+                current_price = history['Close'].iloc[-1]
+                buy_price_20w_sma = indicators.get('20W SMA')
+
+                # Calculate the difference: Current Price - Recommended Buy Price (for ranking)
+                price_diff = current_price - buy_price_20w_sma if buy_price_20w_sma is not None else np.nan
+
+                all_signals.append({
+                    'Ticker': ticker, 
+                    'Signal': recommendation,
+                    'Current_Price': current_price,
+                    'Buy_Price_20W_SMA': buy_price_20w_sma,
+                    'Price_Diff': price_diff
+                })
                 analyzed_count += 1
             else:
                  # If not enough data, mark as skip
-                all_signals.append({'Ticker': ticker, 'Signal': 'N/A (Data Error)'})
+                all_signals.append({'Ticker': ticker, 'Signal': 'N/A (Data Error)', 'Price_Diff': np.nan})
         except Exception: 
-            all_signals.append({'Ticker': ticker, 'Signal': 'N/A (Fetch Error)'})
+            all_signals.append({'Ticker': ticker, 'Signal': 'N/A (Fetch Error)', 'Price_Diff': np.nan})
             continue
     
     return pd.DataFrame(all_signals), total_stocks, analyzed_count
@@ -312,7 +322,7 @@ def display_stock_analysis(ticker):
         if buy_price is not None:
             variation = current_price - buy_price
             sign = "+" if variation >= 0 else ""
-            price_variation_text = f", Rs. {sign}{variation:,.2f}/-"
+            price_variation_text = f", [{sign}{variation:,.2f} Rs from Recommended Price]"
             
         # FIX: Update the header with the calculated price variation
         st.header(f"Analysis for: {info.get('shortName', ticker)} ({ticker}){price_variation_text}", divider='rainbow')
@@ -439,8 +449,8 @@ else:
 
         # 2. Comprehensive Signal Calculation (Cached and runs once initially)
         if st.session_state.all_signals_df.empty or button_clicked:
-            with st.spinner("Calculating swing signals for all stocks (This runs only once per hour or on first load)..."):
-                # Run the cached function to get all signals
+            with st.spinner("Calculating swing signals and ranking metrics..."):
+                # Run the cached function to get all signals and prices
                 df_signals, total_stocks, analyzed_stocks = calculate_all_stock_signals(df_full, TICKER_COLUMN_NAME)
                 st.session_state.all_signals_df = df_signals
                 st.session_state.total_stocks = total_stocks
@@ -453,15 +463,27 @@ else:
                     else:
                         df_filtered = df_full
                         
-                    # Calculate ranks for the filtered set (if not All Industries)
+                    # --- NEW RANKING LOGIC (Applied only for specific industries) ---
                     if st.session_state.selected_industry != "All Industries":
-                        industry_signals = st.session_state.all_signals_df[st.session_state.all_signals_df['Ticker'].isin(df_filtered[TICKER_COLUMN_NAME].unique())].copy()
-                        signal_order = {'Strong Buy': 4, 'Buy': 3, 'Hold / Monitor': 2, 'Sell / Avoid': 1, 'N/A (Data Error)': 0, 'N/A (Fetch Error)': 0}
-                        industry_signals['Order'] = industry_signals['Signal'].map(signal_order)
                         
-                        # Sort by rank and update ticker_list to match the ranked order
-                        industry_signals = industry_signals.sort_values(by=['Order', 'Ticker'], ascending=[False, True])
-                        st.session_state.ticker_list = industry_signals['Ticker'].tolist()
+                        # Filter signals for the selected industry
+                        industry_signals = st.session_state.all_signals_df[st.session_state.all_signals_df['Ticker'].isin(df_filtered[TICKER_COLUMN_NAME].unique())].copy()
+                        
+                        # Clean up N/A values for ranking
+                        df_rankable = industry_signals.dropna(subset=['Price_Diff']).copy()
+                        df_non_rankable = industry_signals[industry_signals['Price_Diff'].isna()].copy()
+
+                        # Sort: Ascending order of Price_Diff (Current Price - 20W SMA)
+                        # The smallest/most negative difference (Current Price is far below 20W SMA) is Rank #1
+                        df_rankable = df_rankable.sort_values(by='Price_Diff', ascending=True)
+
+                        # Concatenate and assign ranks
+                        ranked_df = pd.concat([df_rankable, df_non_rankable], ignore_index=True)
+                        ranked_df['Rank'] = np.nan
+                        ranked_df.loc[:len(df_rankable)-1, 'Rank'] = range(1, len(df_rankable) + 1)
+                        
+                        # Update the ticker list to reflect the new rank order
+                        st.session_state.ticker_list = ranked_df['Ticker'].tolist()
                     else:
                         st.session_state.ticker_list = df_filtered[TICKER_COLUMN_NAME].dropna().unique().tolist()
                         
@@ -489,53 +511,47 @@ else:
                     for _, row in sell_signals.iterrows(): st.error(f"**{row['Ticker']}**: {row['Signal']}")
                 else: st.info("No strong sell signals found.")
                 
-            # --- DISPLAY: SPECIFIC INDUSTRY (Full List with Rank and Styling) ---
+            # --- DISPLAY: SPECIFIC INDUSTRY (Full List with New Rank and Styling) ---
             else:
-                # Use the logic from the button click to get the already sorted list
-                industry_tickers = st.session_state.ticker_list 
-                industry_signals = st.session_state.all_signals_df[st.session_state.all_signals_df['Ticker'].isin(industry_tickers)].copy()
+                st.subheader(f"{st.session_state.selected_industry} Signals (Ranked by Buy Opportunity)", divider='rainbow')
                 
-                st.subheader(f"{st.session_state.selected_industry} Signals", divider='rainbow')
+                # Retrieve the current ranked list from session state
+                current_ranked_tickers = st.session_state.ticker_list
                 
-                if not industry_signals.empty:
-                    # 1. Define order values for sorting and ranking
-                    signal_order = {'Strong Buy': 4, 'Buy': 3, 'Hold / Monitor': 2, 'Sell / Avoid': 1, 'N/A (Data Error)': 0, 'N/A (Fetch Error)': 0}
-                    industry_signals['Order'] = industry_signals['Signal'].map(signal_order)
-
-                    # Ensure the dataframe is sorted by the ranked order that matches ticker_list
-                    industry_signals = industry_signals.set_index('Ticker').reindex(industry_tickers).reset_index()
-
-                    # 3. Assign Rank only to valid signals (Order > 0)
-                    valid_indices = industry_signals[industry_signals['Order'] > 0].index
-                    industry_signals.loc[valid_indices, 'Rank'] = range(1, len(valid_indices) + 1)
+                if current_ranked_tickers:
+                    # Re-filter and prepare for display based on the session state order
+                    industry_signals = st.session_state.all_signals_df[st.session_state.all_signals_df['Ticker'].isin(current_ranked_tickers)].copy()
                     
-                    # Fix: Ensure Rank is integer then string (non-decimal integer)
+                    # 1. Re-sort the display DF using the session state order
+                    industry_signals = industry_signals.set_index('Ticker').reindex(current_ranked_tickers).reset_index()
+                    
+                    # 2. Assign Rank (based on the index of non-NaN Price_Diff values)
+                    df_rankable_count = industry_signals['Price_Diff'].notna().sum()
+                    industry_signals['Rank'] = np.nan
+                    industry_signals.loc[:df_rankable_count-1, 'Rank'] = range(1, df_rankable_count + 1)
+                    
+                    # Final Rank Cleanup
                     industry_signals['Rank'] = industry_signals['Rank'].fillna(0).astype(int)
                     industry_signals.loc[industry_signals['Rank'] == 0, 'Rank'] = '-'
                     industry_signals['Rank'] = industry_signals['Rank'].astype(str)
 
-
-                    # 4. Define the styling function for coloring the 'Recommendation' column (Rich Colors)
+                    # Define the styling function for coloring the 'Recommendation' column (Rich Colors)
                     def color_signals(s):
                         if s == 'Strong Buy' or s == 'Buy':
-                            # Vibrant Green
                             return 'background-color: #2ECC71; color: white; font-weight: bold;' 
                         elif s == 'Hold / Monitor':
-                            # Rich Gold/Yellow
                             return 'background-color: #F39C12; color: #333333;' 
                         elif s == 'Sell / Avoid':
-                            # Strong Red
                             return 'background-color: #E74C3C; color: white; font-weight: bold;' 
                         else:
-                            # Grey for N/A
                             return 'background-color: #BDC3C7; color: #383d41;'
 
-                    # Clean up and prepare for display
+                    # Prepare for display
                     styled_df = industry_signals[['Rank', 'Ticker', 'Signal']].rename(columns={'Ticker': 'Stock', 'Signal': 'Recommendation'})
                     
-                    st.caption(f"Showing {len(industry_signals)} stocks in this industry.")
+                    st.caption(f"Showing {len(industry_signals)} stocks in this industry. Rank based on proximity to 20W SMA.")
 
-                    # 5. Apply styling and display the DataFrame
+                    # Apply styling and display the DataFrame
                     st.dataframe(
                         styled_df.style.applymap(color_signals, subset=['Recommendation']),
                         hide_index=True,
@@ -548,7 +564,7 @@ else:
         st.markdown(
             """
             <div style='font-size: 0.7rem; color: #a9a9a9; margin-top: 50px; text-align: center; padding-top: 10px; border-top: 1px solid #33333340;'>
-                © 2025 SN Systems, by Sivasethupathi. All Rights Reserved and strictly for internal purpose.
+                © 2025 NS SYSTEMS, by Sivasethupathi. All Rights Reserved and strictly for internal purpose.
             </div>
             """, 
             unsafe_allow_html=True
@@ -558,7 +574,6 @@ else:
     # --- NEW: TOP RIGHT SEARCH BAR LOGIC ---
     # Create the combined list for search suggestions
     all_tickers_names = []
-    # Ensure COMPANY_COLUMN_NAME is defined if using it, assuming it's available
     df_search_mapping = df_full[[TICKER_COLUMN_NAME, COMPANY_COLUMN_NAME]].dropna()
     for _, row in df_search_mapping.iterrows():
         # Format: "COMPANY NAME (TICKER)" for easy selection and ticker extraction
