@@ -54,7 +54,7 @@ st.markdown("Select an industry from your Excel file to get a consolidated analy
 
 # --- API KEY CONFIGURATION ---
 # IMPORTANT: Replace the placeholder below with your actual NewsAPI.org API Key
-NEWSAPI_KEY = "REPLACE_WITH_YOUR_NEWSAPI_KEY"
+NEWSAPI_KEY = "517d56d684f04f0bba8a65bcc478727c"
 
 # ======================================================================================
 # DATA FETCHING & CALCULATION FUNCTIONS
@@ -461,7 +461,7 @@ def display_stock_analysis(ticker):
     if buy_price is not None:
         variation = current_price - buy_price
         sign = "+" if variation >= 0 else ""
-        price_variation_text = f", [{sign}{variation:,.2f} Rs from Recommended Price]"
+        price_variation_text = f", Rs.{sign}{variation:,.2f}/-"
         
     # Update the header with the calculated price variation
     st.header(f"Analysis for: {info.get('shortName', ticker)} ({ticker}){price_variation_text}", divider='rainbow')
@@ -582,7 +582,7 @@ else:
         st.stop()
     
     with st.sidebar:
-        st.header("⚙️ Analysis Filter")
+        st.header("⚙️ SN Traders")
         
         # 1. Industry Selection
         new_selected_industry = st.selectbox("Select an Industry:", industries, key='sidebar_select')
@@ -773,7 +773,7 @@ else:
         st.markdown(
             """
             <div style='font-size: 0.7rem; color: #a9a9a9; margin-top: 20px; text-align: center; padding-top: 10px; border-top: 1px solid #33333340;'>
-                © 2025 Mock Test Platform, by Sivasethupathi. All Rights Reserved and strictly for internal purpose.
+                © 2025 SN Systems, by Sivasethupathi. All Rights Reserved and strictly for internal purpose.
             </div>
             """, 
             unsafe_allow_html=True
