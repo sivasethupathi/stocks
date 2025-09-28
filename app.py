@@ -397,82 +397,98 @@ def calculate_all_stock_signals(df, ticker_col):
 
 def display_stock_analysis(ticker):
     """Displays analysis for a single stock."""
+    # Ensure history is available before proceeding with detailed analysis
     try:
         history, info, financials, daily_history = get_stock_data(ticker)
-        if history.empty:
-            st.warning(f"Could not fetch price history for **{ticker}**. Skipping.")
-            return
+    except Exception as e:
+        st.error(f"Failed to fetch base data for **{ticker}**: {e}")
+        return
 
-        swing_indicators, swing_recommendation, _ = calculate_swing_trade_analysis(history)
+    if history.empty:
+        st.warning(f"Could not fetch price history for **{ticker}**. Skipping analysis.")
+        return
+
+    # --- Calculation Block (Safe access for metrics and headers) ---
+    swing_indicators = None
+    swing_recommendation = "N/A"
+    swing_reasoning = "Data not available or history too short (need 52 weeks)."
+    intrinsic_value = None
+    
+    try:
+        swing_indicators, swing_recommendation, swing_reasoning = calculate_swing_trade_analysis(history)
         intrinsic_value = calculate_graham_intrinsic_value(info, financials)
-        
-        current_price = history['Close'].iloc[-1]
-        
-        # --- 52-DAY AVERAGE METRIC ---
-        avg_52_day = calculate_52_day_average(daily_history)
-        avg_52_day_display = f"₹{avg_52_day:,.2f}" if avg_52_day is not None else "N/A"
-        
-        avg_delta_color = "off" 
-        avg_delta_text = "N/A"
+    except Exception as e:
+        st.warning(f"Error calculating core metrics/signals for {ticker}: {e}")
 
-        if avg_52_day is not None and avg_52_day != 0:
-            price_diff_abs = abs(current_price - avg_52_day)
-            price_diff_percent = ((current_price - avg_52_day) / avg_52_day) * 100
-            
-            if current_price > avg_52_day:
-                avg_delta_color = "inverse" # Red
-                avg_delta_text = f"↑ {price_diff_percent:,.2f}% (+₹{price_diff_abs:,.2f})"
-            elif current_price < avg_52_day:
-                avg_delta_color = "normal" # Green
-                avg_delta_text = f"↓ -₹{price_diff_abs:,.2f} ({price_diff_percent:,.2f}%)"
-            else:
-                avg_delta_text = "At 52D Avg"
-        elif avg_52_day == 0:
-            avg_delta_text = "Avg Price is Zero"
+    current_price = history['Close'].iloc[-1]
+    
+    # --- METRIC SETUP ---
+    
+    # 52-DAY AVERAGE METRIC
+    avg_52_day = calculate_52_day_average(daily_history)
+    avg_52_day_display = f"₹{avg_52_day:,.2f}" if avg_52_day is not None else "N/A"
+    avg_delta_color = "off" 
+    avg_delta_text = "N/A"
 
-        # --- Swing Signal Text Color Enhancement ---
-        def get_signal_style(signal):
-            if 'Buy' in signal:
-                return "🟢 <span style='color: #2ECC71; font-weight: bold;'>{signal}</span>"
-            elif 'Hold' in signal:
-                return "🟡 <span style='color: #F39C12; font-weight: bold;'>{signal}</span>"
-            else:
-                return "🔴 <span style='color: #E74C3C; font-weight: bold;'>{signal}</span>"
+    if avg_52_day is not None and avg_52_day != 0:
+        price_diff_abs = abs(current_price - avg_52_day)
+        price_diff_percent = ((current_price - avg_52_day) / avg_52_day) * 100
         
-        styled_signal = get_signal_style(swing_recommendation).format(signal=swing_recommendation)
+        if current_price > avg_52_day:
+            avg_delta_color = "inverse" # Red
+            avg_delta_text = f"↑ {price_diff_percent:,.2f}% (+₹{price_diff_abs:,.2f})"
+        elif current_price < avg_52_day:
+            avg_delta_color = "normal" # Green
+            avg_delta_text = f"↓ -₹{price_diff_abs:,.2f} ({price_diff_percent:,.2f}%)"
+        else:
+            avg_delta_text = "At 52D Avg"
 
-        # --- Calculate and Format Price Variation for Header ---
-        price_variation_text = ""
-        buy_price = swing_indicators.get('20W SMA') if swing_indicators else None
-        
-        if buy_price is not None:
-            variation = current_price - buy_price
-            sign = "+" if variation >= 0 else ""
-            price_variation_text = f", [{sign}{variation:,.2f} Rs from Recommended Price]"
-            
-        # Update the header with the calculated price variation
-        st.header(f"Analysis for: {info.get('shortName', ticker)} ({ticker}){price_variation_text}", divider='rainbow')
+    # Swing Signal Text Color Enhancement
+    def get_signal_style(signal):
+        if 'Buy' in signal:
+            return "🟢 <span style='color: #2ECC71; font-weight: bold;'>{signal}</span>"
+        elif 'Hold' in signal:
+            return "🟡 <span style='color: #F39C12; font-weight: bold;'>{signal}</span>"
+        else:
+            return "🔴 <span style='color: #E74C3C; font-weight: bold;'>{signal}</span>"
+    
+    styled_signal = get_signal_style(swing_recommendation).format(signal=swing_recommendation)
 
-        m_col1, m_col2, m_col3, m_col4, m_col5 = st.columns(5)
-        m_col1.metric("Current Price", f"₹{current_price:,.2f}")
+    # Calculate and Format Price Variation for Header
+    price_variation_text = ""
+    buy_price = swing_indicators.get('20W SMA') if swing_indicators else None
+    
+    if buy_price is not None:
+        variation = current_price - buy_price
+        sign = "+" if variation >= 0 else ""
+        price_variation_text = f", [{sign}{variation:,.2f} Rs from Recommended Price]"
         
-        m_col2.markdown(f"**Swing Signal**", unsafe_allow_html=True)
-        m_col2.markdown(f"<p style='font-size: 1.5em;'>{styled_signal}</p>", unsafe_allow_html=True) 
-        
-        m_col3.metric("Intrinsic Value", f"₹{intrinsic_value:,.2f}" if intrinsic_value else "N/A")
-        
-        m_col4.metric(label="Last 52 Days Average", value=avg_52_day_display, delta=avg_delta_text, delta_color=avg_delta_color)
-        m_col5.metric("Buy Price (≈20W SMA)", f"₹{swing_indicators['20W SMA']:,.2f}" if swing_indicators else "N/A")
-        
-        st.divider()
+    # Update the header with the calculated price variation
+    st.header(f"Analysis for: {info.get('shortName', ticker)} ({ticker}){price_variation_text}", divider='rainbow')
 
-        # ===============================================
-        # CHART AND ANALYSIS SECTION
-        # ===============================================
-        chart_col, analysis_col = st.columns([2, 1])
+    # Display Metrics
+    m_col1, m_col2, m_col3, m_col4, m_col5 = st.columns(5)
+    m_col1.metric("Current Price", f"₹{current_price:,.2f}")
+    
+    m_col2.markdown(f"**Swing Signal**", unsafe_allow_html=True)
+    m_col2.markdown(f"<p style='font-size: 1.5em;'>{styled_signal}</p>", unsafe_allow_html=True) 
+    
+    m_col3.metric("Intrinsic Value", f"₹{intrinsic_value:,.2f}" if intrinsic_value else "N/A")
+    
+    m_col4.metric(label="Last 52 Days Average", value=avg_52_day_display, delta=avg_delta_text, delta_color=avg_delta_color)
+    m_col5.metric("Buy Price (≈20W SMA)", f"₹{swing_indicators['20W SMA']:,.2f}" if swing_indicators and '20W SMA' in swing_indicators else "N/A")
+    
+    st.divider()
 
-        with chart_col:
-            st.subheader("Weekly Price Chart with Fibonacci Retracement")
+    # ===============================================
+    # CHART AND ANALYSIS SECTION (Now protected)
+    # ===============================================
+    chart_col, analysis_col = st.columns([2, 1])
+
+    # CHART RENDERING
+    with chart_col:
+        st.subheader("Weekly Price Chart with Fibonacci Retracement")
+        try:
             # This is the line that was throwing the error, now protected by stable function
             fib_levels, _, is_uptrend, high_price, low_price = calculate_fibonacci_levels(history)
             
@@ -490,29 +506,35 @@ def display_stock_analysis(ticker):
 
             fig.update_layout(height=600, yaxis_title='Price (INR)', xaxis_rangeslider_visible=False, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             st.plotly_chart(fig, use_container_width=True)
-        
-        with analysis_col:
-            st.subheader("Swing Signal Reasoning")
-            _, _, swing_reasoning = calculate_swing_trade_analysis(history)
-            st.info(swing_reasoning)
+        except Exception as e:
+            st.error(f"Could not render price chart: {e}")
+            st.info("Ensure the stock has sufficient history for chart plotting.")
 
-            st.subheader("Fibonacci Retracement Analysis")
-            _, fib_signal, _, _, _ = calculate_fibonacci_levels(history)
-            st.info(fib_signal)
+    # ANALYSIS RENDERING
+    with analysis_col:
+        st.subheader("Swing Signal Reasoning")
+        st.info(swing_reasoning) # Reusing the safely calculated reasoning
 
-            st.subheader("Key Financial Ratios (Screener.in)")
+        st.subheader("Fibonacci Retracement Analysis")
+        # Recalculate or reuse fib_signal if needed, but safer to reuse the result from the chart block
+        # Using the result from the chart block is implicitly done via the shared variable scope
+        fib_levels, fib_signal, _, _, _ = calculate_fibonacci_levels(history) 
+        st.info(fib_signal)
+
+        st.subheader("Key Financial Ratios (Screener.in)")
+        try:
             screener_data, screener_status = scrape_screener_data(ticker)
             if screener_status == "Success":
                 df_screener = pd.DataFrame(screener_data.items(), columns=['Ratio', 'Value'])
                 st.dataframe(df_screener, use_container_width=True, hide_index=True)
             else:
                 st.warning(f"Could not scrape data ({screener_status}).")
+        except Exception as e:
+             st.error(f"Error fetching/displaying ratios: {e}")
 
-    except Exception as e:
-        st.error(f"An error occurred while processing **{ticker}**: {e}")
     
     # ===============================================
-    # NEW: RECENT NEWS ARTICLES DISPLAY (Full Width)
+    # RECENT NEWS ARTICLES DISPLAY (Full Width)
     # ===============================================
     st.subheader("Recent News Articles (NewsAPI.org)", divider='red')
     news_result = get_newsapi_articles(ticker)
