@@ -582,7 +582,7 @@ else:
         st.stop()
     
     with st.sidebar:
-        st.header("⚙️ SN Traders")
+        st.header("⚙️ NS Traders")
         
         # 1. Industry Selection
         new_selected_industry = st.selectbox("Select an Industry:", industries, key='sidebar_select')
@@ -773,7 +773,7 @@ else:
         st.markdown(
             """
             <div style='font-size: 0.7rem; color: #a9a9a9; margin-top: 20px; text-align: center; padding-top: 10px; border-top: 1px solid #33333340;'>
-                © 2025 SN Systems, by Sivasethupathi. All Rights Reserved and strictly for internal purpose.
+                © 2025 NS Systems, by Sivasethupathi. All Rights Reserved and strictly for internal purpose.
             </div>
             """, 
             unsafe_allow_html=True
